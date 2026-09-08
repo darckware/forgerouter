@@ -145,28 +145,53 @@ app = FastAPI(title="ForgeRouter", version="0.1.0", lifespan=_lifespan)
 
 # Virtual routes can select different concrete models. This is the floor of the
 # advertised contract — Hermes Agent's own hard minimum (agent/model_metadata.py:
-# MINIMUM_CONTEXT_LENGTH, mirrored as app.demand.MINIMUM_CONTEXT_LENGTH) — used
-# whenever no candidate's real window is known. When real windows are known,
-# _virtual_model_context_lengths advertises the true guaranteed minimum instead
-# of hiding a larger real window behind this constant.
+# MINIMUM_CONTEXT_LENGTH) — used whenever no reachable candidate's real window
+# is known. When real windows are known, _virtual_model_context_lengths
+# advertises the true guaranteed minimum instead of hiding a larger real
+# window behind this constant. Real per-request safety against an oversized
+# prompt is enforced regardless of this number by app.context_policy at
+# request time — this is informational metadata for a caller's own client-
+# side budgeting (e.g. Hermes Agent deciding how much memory/context it's
+# safe to attach), not the source of the safety guarantee itself.
 VIRTUAL_MODEL_CONTEXT_LENGTH = 64_000
 
 
-def _virtual_model_context_lengths(registry) -> dict[str, int]:
+def _virtual_model_context_lengths(registry, allowed: set[str] | None = None) -> dict[str, int]:
     """Real guaranteed context window per virtual model: the smallest real
-    window among a demand's default-chain candidates, floored at
-    VIRTUAL_MODEL_CONTEXT_LENGTH since a virtual route can land on any of
-    them and must never overstate what every candidate can actually take.
-    forgerouter/auto can land on any demand's chain, so it takes the minimum
-    across all of them.
+    window among every candidate that demand could actually reach.
+    Deliberately not chain-order-dependent: a configured/default chain only
+    decides chat_completions' try-order, never which candidates stay
+    reachable — every other healthy(+allowed) candidate for the demand's
+    capability remains a fallback behind it, so the worst case (and thus
+    this guarantee) spans that whole pool regardless of chain order. Floored
+    at VIRTUAL_MODEL_CONTEXT_LENGTH since a virtual route can land on any
+    reachable candidate and must never overstate what every one of them can
+    actually take.
+
+    `allowed` (an agent's own model restrictions) narrows the pool to what
+    that specific caller can actually reach — advertising a window built
+    from models the agent could never route to would be a promise
+    ForgeRouter can't keep for it.
+
+    forgerouter/auto excludes vision/audio from its own minimum: those
+    demands are reachable only when the request itself carries image/audio
+    content (resolve_demand's hard content requirement), which this
+    metadata call — issued with no request messages — can never trigger for
+    a plain-text caller. Letting a content-gated demand's worst case sink
+    the number every plain-text conversation is quoted would just make
+    Hermes distrust a window it can actually always get; the real vision/
+    audio safety check still happens per-request via app.context_policy.
     """
     healthy = registry.healthy_for_capability("text")
+    if allowed is not None:
+        healthy = [model for model in healthy if model.id in allowed]
     per_demand: dict[str, int] = {}
     for demand in DEMANDS:
-        chain = default_chain(healthy, demand) or healthy
-        windows = [window for window in (context_window(m.id, m.provider_model) for m in chain) if window]
+        pool = [model for model in healthy if demand in model.capabilities] if demand in ("vision", "audio", "code") else healthy
+        windows = [window for window in (context_window(m.id, m.provider_model) for m in pool) if window]
         per_demand[demand] = max(min(windows), VIRTUAL_MODEL_CONTEXT_LENGTH) if windows else VIRTUAL_MODEL_CONTEXT_LENGTH
-    per_demand["auto"] = min(per_demand.values()) if per_demand else VIRTUAL_MODEL_CONTEXT_LENGTH
+    text_demands = [d for d in DEMANDS if d not in ("vision", "audio")]
+    per_demand["auto"] = min((per_demand[d] for d in text_demands), default=VIRTUAL_MODEL_CONTEXT_LENGTH)
     return per_demand
 
 
@@ -375,9 +400,23 @@ def health():
 
 
 @app.get("/v1/models")
-def models():
+def models(raw_request: Request):
     registry = load_registry_with_db_health()
-    context_lengths = _virtual_model_context_lengths(registry)
+    # Model discovery stays public (unlike chat completion, a missing/invalid
+    # key never 401s here) — but when the caller does present a valid agent
+    # key, scope the advertised virtual context windows to what that agent
+    # can actually reach instead of the unrestricted pool. Any lookup failure
+    # (bad key, DB unreachable) falls back to the unrestricted pool.
+    allowed: set[str] | None = None
+    authorization = raw_request.headers.get("authorization", "")
+    if authorization.startswith("Bearer "):
+        try:
+            agent_name = find_agent_by_key(authorization[len("Bearer "):].strip())
+            if agent_name:
+                allowed = agent_allowed_models(agent_name)
+        except Exception:
+            allowed = None
+    context_lengths = _virtual_model_context_lengths(registry, allowed=allowed)
     virtual = [
         {
             "id": model_id,

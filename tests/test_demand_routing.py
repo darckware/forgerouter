@@ -466,24 +466,83 @@ def test_models_endpoint_exposes_real_context_length_for_concrete_models(monkeyp
     assert "context_length" not in unknown_entry
 
 
-def test_models_endpoint_virtual_context_length_reflects_real_windows(monkeypatch):
-    # score 60, reasoning-capable → "complex"/"reasoning" bands.
-    big = model("openrouter/deepseek-r1:free", 2, ["text", "reasoning"])
-    # score 12 → "simple" band.
-    small = model("local/qwen2.5:1.5b", 4)
+def test_models_endpoint_virtual_context_length_widens_beyond_the_chain_head_band(monkeypatch):
+    # complex/reasoning's chain head-band is score>=50 (only "big"), but the
+    # small model stays reachable right behind it as fallback — same as real
+    # chat_completions routing, where the chain only decides try-order and
+    # every other healthy candidate stays in the pool. The advertised
+    # guarantee must reflect that whole reachable pool, not just the head
+    # band, or it understates the real (smaller) worst case.
+    big = model("openrouter/deepseek-r1:free", 2, ["text", "reasoning", "code"])  # score 60
+    small = model("local/qwen2.5:1.5b", 4, ["text", "code"])  # score 12
     monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([big, small]))
     _patch_context_window(monkeypatch, {"openrouter/deepseek-r1:free": 300_000, "local/qwen2.5:1.5b": 70_000})
 
     payload = client.get("/v1/models").json()["data"]
     virtual = {item["id"]: item["context_length"] for item in payload if item["id"].startswith("forgerouter/")}
 
-    # complex/reasoning route only through the big model → its real window.
-    assert virtual["forgerouter/complex"] == 300_000
-    assert virtual["forgerouter/reasoning"] == 300_000
-    # simple routes through the small model → its (smaller, still >=64k) real window.
+    # Every demand can eventually fall back to the small model, so its real
+    # (smaller) window is the true guarantee — not the big model's.
+    assert virtual["forgerouter/complex"] == 70_000
+    assert virtual["forgerouter/reasoning"] == 70_000
     assert virtual["forgerouter/simple"] == 70_000
-    # auto can land on any chain, so it takes the worst case across all of them.
+    assert virtual["forgerouter/code"] == 70_000
     assert virtual["forgerouter/auto"] == 70_000
+
+
+def test_models_endpoint_auto_excludes_content_gated_demands(monkeypatch):
+    # vision/audio are only reachable when the request itself carries actual
+    # image/audio content (resolve_demand's hard content requirement) — a
+    # plain-text forgerouter/auto conversation can never land there, so
+    # their worst case (here: no vision/audio-capable model at all, floored
+    # at the Hermes minimum) must not drag auto's advertised window down for
+    # every ordinary text caller.
+    text_only = model("p/text-only", 1, ["text", "code"])
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([text_only]))
+    _patch_context_window(monkeypatch, {"p/text-only": 300_000})
+
+    payload = client.get("/v1/models").json()["data"]
+    virtual = {item["id"]: item["context_length"] for item in payload if item["id"].startswith("forgerouter/")}
+
+    assert virtual["forgerouter/vision"] == 64_000
+    assert virtual["forgerouter/audio"] == 64_000
+    assert virtual["forgerouter/auto"] == 300_000
+
+
+def test_models_endpoint_scopes_virtual_context_to_authenticated_agent_pool(monkeypatch):
+    # An agent key restricted to only the roomy model must see that model's
+    # window, not one built from the unrestricted global pool it can't
+    # actually reach.
+    roomy = model("p/roomy", 1, ["text", "code"])
+    small = model("p/small", 2, ["text", "code"])
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([roomy, small]))
+    _patch_context_window(monkeypatch, {"p/roomy": 300_000, "p/small": 70_000})
+    monkeypatch.setattr("app.main.find_agent_by_key", lambda key: "athos" if key == "agent-key" else None)
+    monkeypatch.setattr("app.main.agent_allowed_models", lambda name: {"p/roomy"} if name == "athos" else None)
+
+    scoped = client.get("/v1/models", headers={"Authorization": "Bearer agent-key"}).json()["data"]
+    unrestricted = client.get("/v1/models").json()["data"]
+
+    scoped_virtual = {item["id"]: item["context_length"] for item in scoped if item["id"].startswith("forgerouter/")}
+    unrestricted_virtual = {item["id"]: item["context_length"] for item in unrestricted if item["id"].startswith("forgerouter/")}
+    assert scoped_virtual["forgerouter/auto"] == 300_000
+    assert unrestricted_virtual["forgerouter/auto"] == 70_000
+
+
+def test_models_endpoint_agent_lookup_failure_stays_unrestricted(monkeypatch):
+    # DB/lookup failures must never break discovery — falls back to the
+    # unrestricted pool (and stays HTTP 200) exactly like chat_completions does.
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([model("p1/m", 1)]))
+
+    def boom(key):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("app.main.find_agent_by_key", boom)
+
+    response = client.get("/v1/models", headers={"Authorization": "Bearer whatever"})
+
+    assert response.status_code == 200
+    assert any(item["id"] == "p1/m" for item in response.json()["data"])
 
 
 def test_demand_routes_endpoints(monkeypatch):

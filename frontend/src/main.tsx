@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
+import ReCAPTCHA from 'react-google-recaptcha';
 import * as Select from '@radix-ui/react-select';
 import { Activity, AlertTriangle, ArrowLeft, AudioLines, Bot, Boxes, Brain, Check, CheckCircle2, CheckCheck, ChevronDown, ChevronUp, Code, Copy, CopyPlus, DollarSign, ExternalLink, Eye, EyeOff, HeartPulse, ImagePlus, Info, KeyRound, Layers, LayoutDashboard, Link2, Loader2, LogOut, MessageSquare, Monitor, Moon, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Plus, Power, PowerOff, RefreshCw, Route, Save, Scissors, Send, ShieldCheck, Shuffle, SignalHigh, SignalLow, SignalMedium, SlidersHorizontal, Sun, Terminal, Trash2, Type, User, UsersRound, Wrench, X } from 'lucide-react';
 import './style.css';
@@ -472,22 +473,30 @@ function AuthLayout({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Unset until the key pair is provisioned for this domain (see CLAUDE.md's
+// reCAPTCHA note) -- the widget below only renders once a site key exists,
+// so login keeps working exactly as before in the meantime.
+const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY as string | undefined;
+
 function LoginScreen({ onLogin }: { onLogin: (token: string, user: AuthUser, password: string) => void }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recaptchaToken, setRecaptchaToken] = useState<string | null>(null);
+  const recaptchaRef = useRef<ReCAPTCHA>(null);
 
   async function submit() {
     if (pending || !username.trim() || !password) return;
+    if (RECAPTCHA_SITE_KEY && !recaptchaToken) return;
     setPending(true);
     setError(null);
     try {
       const res = await fetch('/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: username.trim(), password }),
+        body: JSON.stringify({ username: username.trim(), password, recaptcha_token: recaptchaToken }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message ?? 'Login failed');
@@ -498,6 +507,8 @@ function LoginScreen({ onLogin }: { onLogin: (token: string, user: AuthUser, pas
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
+      recaptchaRef.current?.reset();
+      setRecaptchaToken(null);
     } finally {
       setPending(false);
     }
@@ -525,7 +536,24 @@ function LoginScreen({ onLogin }: { onLogin: (token: string, user: AuthUser, pas
             </button>
           </span>
         </label>
-        <button className="button" disabled={pending || !username.trim() || !password} onClick={() => void submit()}>{pending ? 'Signing in…' : 'Sign in'}</button>
+        {RECAPTCHA_SITE_KEY && (
+          <div className="authRecaptcha">
+            <ReCAPTCHA
+              ref={recaptchaRef}
+              sitekey={RECAPTCHA_SITE_KEY}
+              theme="dark"
+              onChange={(token) => setRecaptchaToken(token)}
+              onExpired={() => setRecaptchaToken(null)}
+            />
+          </div>
+        )}
+        <button
+          className="button"
+          disabled={pending || !username.trim() || !password || (Boolean(RECAPTCHA_SITE_KEY) && !recaptchaToken)}
+          onClick={() => void submit()}
+        >
+          {pending ? 'Signing in…' : 'Sign in'}
+        </button>
       </div>
       <p className="authRestrict">Restricted area — administrator access only.</p>
     </AuthLayout>

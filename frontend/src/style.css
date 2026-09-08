@@ -297,6 +297,7 @@ html.light{--bg:#eef0f3;--surface:#ffffff;--surface2:#f7f8fa;--raised:#f3f4f6;--
 .authCard input:focus{border-color:#8b5cf6}
 .authCard .alert{margin:0}
 .authCard .button{justify-content:center;margin-top:4px}
+.authRecaptcha{display:flex;justify-content:center;margin-top:4px}
 .authHint{font-size:12px;margin:0}
 .sidebar{display:flex;flex-direction:column}
 .sidebar>div:not(.brand):not(.sidebarFooter){flex-shrink:0}

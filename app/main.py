@@ -14,6 +14,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -149,12 +150,26 @@ async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     yield
 
 
-# docs_url/redoc_url/openapi_url are off: this service is reachable from the
-# public internet (forgerouter.darckware.net), and the schema they'd publish
+# docs_url/redoc_url/openapi_url are off in every environment except an
+# explicit dev/homolog opt-in: this service is reachable from the public
+# internet (forgerouter.darckware.net), and the schema they'd publish
 # includes every /admin/* route's shape — no secrets, but still not meant to
-# be world-readable. /v1/* and /admin/* stay reachable exactly as before;
-# only FastAPI's own auto-generated docs UI/schema are disabled.
-app = FastAPI(title="ForgeRouter", version="0.1.0", lifespan=_lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+# be world-readable. Fail-closed by design — APP_ENV unset, "local" (the
+# label on this very host's .env despite it being the public-facing
+# instance) or "production" all resolve to disabled; only a value in
+# _DOCS_ENABLED_ENVIRONMENTS turns them on. /v1/* and /admin/* stay
+# reachable exactly as before; only FastAPI's own auto-generated docs
+# UI/schema are gated by this.
+_DOCS_ENABLED_ENVIRONMENTS = {"development", "dev", "homolog", "homologacao", "staging"}
+_docs_enabled = os.environ.get("APP_ENV", "").strip().lower() in _DOCS_ENABLED_ENVIRONMENTS
+app = FastAPI(
+    title="ForgeRouter",
+    version="0.1.0",
+    lifespan=_lifespan,
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
+)
 
 # Virtual routes can select different concrete models. This is the floor of the
 # advertised contract — Hermes Agent's own hard minimum (agent/model_metadata.py:
@@ -1920,6 +1935,31 @@ def require_admin(request: Request) -> JSONResponse | None:
 class LoginPayload(BaseModel):
     username: str
     password: str
+    recaptcha_token: str | None = None
+
+
+def _verify_recaptcha(token: str | None) -> bool:
+    """Server-side check of a Google reCAPTCHA v2 token before the dashboard
+    login runs. Fail-open when RECAPTCHA_SECRET_KEY is unset (dev/local, or
+    before the key pair is provisioned for this domain) so login never
+    breaks by omission -- same convention as darckware's app/core/recaptcha.py.
+    Once configured, a missing/invalid token is rejected."""
+    secret = os.environ.get("RECAPTCHA_SECRET_KEY", "").strip()
+    if not secret:
+        return True
+    if not token:
+        return False
+    try:
+        resp = httpx.post(
+            "https://www.google.com/recaptcha/api/siteverify",
+            data={"secret": secret, "response": token},
+            timeout=5.0,
+        )
+        if resp.status_code == 200:
+            return bool(resp.json().get("success", False))
+        return False
+    except Exception:
+        return False
 
 
 class ChangeCredentialsPayload(BaseModel):
@@ -1935,6 +1975,11 @@ def bearer_token(request: Request) -> str:
 
 @app.post("/auth/login")
 def auth_login(payload: LoginPayload):
+    if not _verify_recaptcha(payload.recaptcha_token):
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": "reCAPTCHA verification failed", "type": "recaptcha_failed"}},
+        )
     try:
         ensure_default_user()
         user = authenticate_user(payload.username.strip(), payload.password)

@@ -113,16 +113,25 @@ def _lookup(public_id: str, provider_model: str) -> dict[str, Any] | None:
 
 
 def context_window(public_id: str, provider_model: str) -> int | None:
-    """The model's real input context window in tokens, when the LiteLLM
-    catalog has it — used to scale the context-truncation trigger to the
-    actual model being called instead of one constant for every model.
-    live/overrides entries don't carry this field, only the LiteLLM catalog
-    tier does, so this only ever resolves through that final fallback."""
-    entry = _lookup(public_id or "", provider_model or "")
-    if not entry:
-        return None
-    window = entry.get("context_window")
-    return int(window) if isinstance(window, (int, float)) and window > 0 else None
+    """The model's real input context window in tokens.
+
+    Resolve this field independently across the pricing tiers. A higher-tier
+    entry may contain authoritative pricing without context metadata; that
+    must not hide a context window available from a lower tier.
+    """
+    public_id = public_id or ""
+    provider_model = provider_model or ""
+    catalog = _get_catalog()
+    entries = [
+        _get_live().get(public_id),
+        _get_overrides().get(public_id),
+        *(catalog.get(key) for key in (public_id, provider_model, provider_model.rsplit("/", 1)[-1])),
+    ]
+    for entry in entries:
+        window = entry.get("context_window") if isinstance(entry, dict) else None
+        if isinstance(window, (int, float)) and window > 0:
+            return int(window)
+    return None
 
 
 def reference_cost(public_id: str, provider_model: str, prompt_tokens: int, completion_tokens: int) -> float | None:

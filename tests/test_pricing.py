@@ -1,5 +1,5 @@
 import app.pricing as pricing_module
-from app.pricing import reference_cost
+from app.pricing import context_window, reference_cost
 from app.registry import ProviderModel, ProviderRegistry
 
 
@@ -42,6 +42,42 @@ def test_reference_cost_override_takes_priority_over_bulk_catalog():
     cost = reference_cost("nvidia/meta/llama-3.1-8b-instruct", "meta/llama-3.1-8b-instruct", 1000, 500)
 
     assert cost == round(1000 * 2e-08 + 500 * 5e-08, 8)
+
+
+def test_context_window_falls_through_price_only_live_entry(monkeypatch):
+    monkeypatch.setattr(
+        pricing_module,
+        "_live",
+        {"agg/model": {"input_cost_per_token": 0.1, "output_cost_per_token": 0.2}},
+    )
+    monkeypatch.setattr(pricing_module, "_overrides", {})
+    monkeypatch.setattr(
+        pricing_module,
+        "_catalog",
+        {"model": {"input_cost_per_token": 0.3, "output_cost_per_token": 0.4, "context_window": 131_072}},
+    )
+
+    assert context_window("agg/model", "model") == 131_072
+
+
+def test_context_window_prefers_live_value_when_present(monkeypatch):
+    monkeypatch.setattr(pricing_module, "_live", {"agg/model": {"context_window": 200_000}})
+    monkeypatch.setattr(pricing_module, "_overrides", {"agg/model": {"context_window": 150_000}})
+    monkeypatch.setattr(pricing_module, "_catalog", {"model": {"context_window": 131_072}})
+
+    assert context_window("agg/model", "model") == 200_000
+
+
+def test_context_window_falls_through_price_only_override_entry(monkeypatch):
+    monkeypatch.setattr(pricing_module, "_live", {})
+    monkeypatch.setattr(
+        pricing_module,
+        "_overrides",
+        {"agg/model": {"input_cost_per_token": 0.1, "output_cost_per_token": 0.2}},
+    )
+    monkeypatch.setattr(pricing_module, "_catalog", {"model": {"context_window": 131_072}})
+
+    assert context_window("agg/model", "model") == 131_072
 
 
 def test_sync_provider_pricing_parses_aggregator_pricing(monkeypatch, tmp_path):

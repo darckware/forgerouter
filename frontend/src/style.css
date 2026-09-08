@@ -242,9 +242,10 @@ html.light{--bg:#eef0f3;--surface:#ffffff;--surface2:#f7f8fa;--raised:#f3f4f6;--
 .agentHeadLeft{display:flex;align-items:center;gap:9px;flex:1;min-width:0}
 .agentHeadLeft strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .agentHead svg{color:#8b5cf6;flex-shrink:0}
-.editAgentBtn{color:var(--muted);transition:color .15s}
-.editAgentBtn:hover{color:#8b5cf6}
 .agentCardFooter{display:flex;gap:8px;margin-top:2px}
+.agentCardFooter .button{flex:1;justify-content:center}
+.button.danger{background:#450a0a;color:#fca5a5;border:1px solid #7f1d1d}
+.button.danger:not(:disabled):hover{background:#7f1d1d;color:#fecaca}
 .agentStats{display:flex;gap:18px;color:var(--muted);font-size:13px}
 .agentStats b{color:var(--text);font-size:15px;margin-left:6px}
 .agentSpark{width:100%;height:44px}

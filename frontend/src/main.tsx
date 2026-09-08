@@ -3135,13 +3135,6 @@ function App() {
                         >{agent.kind === 'service' ? 'service' : 'agent'}</b>
                         {!agent.enabled && <b className="status unknown">disabled</b>}
                       </span>
-                      <button
-                        className="iconButton editAgentBtn"
-                        title={`Edit ${agent.name}`}
-                        onClick={() => openEditAgent(agent.name)}
-                      >
-                        <Pencil size={15} />
-                      </button>
                     </span>
                     {agent.description && <span className="muted">{agent.description}</span>}
                     <span className="agentStats">
@@ -3208,8 +3201,11 @@ function App() {
                     </span>
                     <AgentSparkline daily={agent.daily} />
                     <div className="agentCardFooter">
-                      <button className="button secondary small wide" onClick={() => openEditAgent(agent.name)}>
+                      <button className="button secondary small" onClick={() => openEditAgent(agent.name)}>
                         <Pencil size={13} /> Edit Agent
+                      </button>
+                      <button className="button danger small" title={`Delete ${agent.name}`} onClick={() => void removeAgent(agent.name)}>
+                        <Trash2 size={13} /> Delete
                       </button>
                     </div>
                   </div>

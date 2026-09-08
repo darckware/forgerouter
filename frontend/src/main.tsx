@@ -9,7 +9,7 @@ import { modelIdsForCostClass, allModelIdsForCostClass, nextAgentModelsForToggle
 import { hermesAgentConfig } from './agentClientConfigs';
 
 type ProviderHealth = { provider: string; model_id: string; tier: number; status: string; http_code: number | null; latency_ms: number | null; error_message: string | null; checked_at: string | null; };
-type RouteEvent = { route_id: number; request_id: string; model_id: string | null; required_capability: string; status: string; error_type: string | null; created_at: string | null; total_tokens: number | null; cost: number; reference_cost: number | null; agent: string | null; demand: string | null; prompt_preview: string | null; messages_dropped: number | null; };
+type RouteEvent = { route_id: number; request_id: string; model_id: string | null; required_capability: string; status: string; error_type: string | null; created_at: string | null; total_tokens: number | null; cost: number; reference_cost: number | null; agent: string | null; demand: string | null; prompt_preview: string | null; messages_dropped: number | null; context_window: number | null; context_budget: number | null; context_action: 'none' | 'summarized' | 'truncated' | 'rejected' | null; context_candidates_skipped: number; };
 type UsageDay = { day: string; messages: number; tokens: number; cost: number; reference_cost: number };
 type UsageModel = { model_id: string; messages: number; tokens: number; cost: number; reference_cost: number; pct_total: number };
 type UsageDemand = { demand: string; messages: number; tokens: number; cost: number; reference_cost: number; pct_total: number };
@@ -3470,9 +3470,14 @@ function App() {
                           Prompt <span className="mono">{route.prompt_preview}{route.prompt_preview.length >= 100 ? '…' : ''}</span>
                         </p>
                       )}
-                      {!!route.messages_dropped && (
-                        <p title="Context truncation dropped this many of the oldest messages before forwarding the request">
-                          <b className="status unhealthy">truncated</b> {route.messages_dropped} message{route.messages_dropped === 1 ? '' : 's'} dropped from history
+                      {((route.context_action && route.context_action !== 'none') || !!route.context_candidates_skipped) && (
+                        <p title="What app.context_policy decided for this request's prompt size vs. the selected model's real context window">
+                          {route.context_action && route.context_action !== 'none' && (
+                            <b className={`status ${route.context_action === 'rejected' ? 'unhealthy' : 'unknown'}`}>context {route.context_action}</b>
+                          )}
+                          {route.context_budget != null && <> · budget {formatContextLength(route.context_budget)}</>}
+                          {!!route.messages_dropped && <> · {route.messages_dropped} message{route.messages_dropped === 1 ? '' : 's'} dropped</>}
+                          {!!route.context_candidates_skipped && <> · {route.context_candidates_skipped} incompatible candidate{route.context_candidates_skipped === 1 ? '' : 's'} skipped</>}
                         </p>
                       )}
                     </div>

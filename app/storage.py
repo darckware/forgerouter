@@ -230,6 +230,10 @@ def persist_route_event(
     provider_model: str | None = None,
     prompt_preview: str | None = None,
     messages_dropped: int | None = None,
+    context_window: int | None = None,
+    context_budget: int | None = None,
+    context_action: str = "none",
+    context_candidates_skipped: int = 0,
 ) -> None:
     row = route_event_to_row(request_id, selected_model_id, required_capability, status, error_type)
     usage = usage or {}
@@ -243,6 +247,10 @@ def persist_route_event(
     row["demand"] = demand
     row["prompt_preview"] = prompt_preview
     row["messages_dropped"] = messages_dropped or None
+    row["context_window"] = context_window
+    row["context_budget"] = context_budget
+    row["context_action"] = context_action
+    row["context_candidates_skipped"] = context_candidates_skipped
     row["reference_cost"] = None
     if not row["cost"] and selected_model_id and (row["prompt_tokens"] or row["completion_tokens"]):
         try:
@@ -259,7 +267,8 @@ def persist_route_event(
                     (request_id, selected_model_id, required_capability, status, error_type,
                      prompt_tokens, completion_tokens, total_tokens, cost, agent_id,
                      prompt_tokens_raw, prompt_tokens_compacted, demand, reference_cost, prompt_preview,
-                     messages_dropped)
+                     messages_dropped, context_window, context_budget, context_action,
+                     context_candidates_skipped)
                 VALUES (
                     %(request_id)s,
                     (SELECT model_id FROM ai_router.models WHERE public_id = %(selected_model_id)s),
@@ -267,7 +276,8 @@ def persist_route_event(
                     %(prompt_tokens)s, %(completion_tokens)s, %(total_tokens)s, %(cost)s,
                     (SELECT agent_id FROM ai_router.agents WHERE name = %(agent_name)s),
                     %(prompt_tokens_raw)s, %(prompt_tokens_compacted)s, %(demand)s, %(reference_cost)s, %(prompt_preview)s,
-                    %(messages_dropped)s
+                    %(messages_dropped)s, %(context_window)s, %(context_budget)s, %(context_action)s,
+                    %(context_candidates_skipped)s
                 )
                 """,
                 row,
@@ -448,7 +458,11 @@ def recent_route_events(limit: int = 25, agent_name: str | None = None) -> list[
         r.demand,
         r.reference_cost,
         r.prompt_preview,
-        r.messages_dropped
+        r.messages_dropped,
+        r.context_window,
+        r.context_budget,
+        r.context_action,
+        r.context_candidates_skipped
     FROM ai_router.route_events r
     LEFT JOIN ai_router.models m ON m.model_id = r.selected_model_id
     LEFT JOIN ai_router.agents a ON a.agent_id = r.agent_id
@@ -476,6 +490,10 @@ def recent_route_events(limit: int = 25, agent_name: str | None = None) -> list[
             "reference_cost": float(row[11]) if row[11] is not None else None,
             "prompt_preview": row[12],
             "messages_dropped": row[13],
+            "context_window": row[14],
+            "context_budget": row[15],
+            "context_action": row[16],
+            "context_candidates_skipped": row[17],
         }
         for row in rows
     ]

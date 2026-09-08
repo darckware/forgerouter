@@ -925,6 +925,9 @@ def _stream_and_persist_usage(
     demand: str | None = None,
     prompt_preview: str | None = None,
     messages_dropped: int | None = None,
+    context_budget: int | None = None,
+    context_action: str = "none",
+    context_candidates_skipped: int = 0,
 ) -> Iterator[bytes]:
     usage: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
@@ -951,12 +954,16 @@ def _stream_and_persist_usage(
                 if buffer:
                     yield buffer
     finally:
+        try:
+            selected_window = context_window(selected.id, selected.provider_model)
+        except Exception:
+            selected_window = None
         if error is not None:
             record_provider_failure(selected.provider)
             metadata = error.get("metadata") if isinstance(error.get("metadata"), dict) else {}
             error_type = f"stream_{metadata.get('error_type') or error.get('code') or 'error'}"
             try:
-                persist_route_event(request_id, selected.id, capability, "provider_error", error_type, agent_name=agent_name, tokens_raw=tokens_raw, tokens_compacted=tokens_compacted, demand=demand, prompt_preview=prompt_preview, messages_dropped=messages_dropped)
+                persist_route_event(request_id, selected.id, capability, "provider_error", error_type, agent_name=agent_name, tokens_raw=tokens_raw, tokens_compacted=tokens_compacted, demand=demand, prompt_preview=prompt_preview, messages_dropped=messages_dropped, context_window=selected_window, context_budget=context_budget, context_action=context_action, context_candidates_skipped=context_candidates_skipped)
             except Exception:
                 pass
             try:
@@ -967,7 +974,7 @@ def _stream_and_persist_usage(
             record_provider_success(selected.provider)
             record_sticky(agent_name, demand, selected.id)
             try:
-                persist_route_event(request_id, selected.id, capability, "success", None, usage=usage, agent_name=agent_name, tokens_raw=tokens_raw, tokens_compacted=tokens_compacted, demand=demand, provider_model=selected.provider_model, prompt_preview=prompt_preview, messages_dropped=messages_dropped)
+                persist_route_event(request_id, selected.id, capability, "success", None, usage=usage, agent_name=agent_name, tokens_raw=tokens_raw, tokens_compacted=tokens_compacted, demand=demand, provider_model=selected.provider_model, prompt_preview=prompt_preview, messages_dropped=messages_dropped, context_window=selected_window, context_budget=context_budget, context_action=context_action, context_candidates_skipped=context_candidates_skipped)
             except Exception:
                 pass
 
@@ -1398,6 +1405,8 @@ def chat_completions(request: ChatCompletionRequest, raw_request: Request):
                 request_id, None, capability, "rejected", "context_too_large",
                 agent_name=agent_name, tokens_raw=tokens_raw, tokens_compacted=context_payload.tokens,
                 demand=demand, prompt_preview=prompt_preview, messages_dropped=context_payload.messages_dropped,
+                context_budget=context_payload.selected_budget, context_action="rejected",
+                context_candidates_skipped=context_payload.skipped,
             )
         except Exception:
             pass
@@ -1420,6 +1429,10 @@ def chat_completions(request: ChatCompletionRequest, raw_request: Request):
         except Exception:
             pass
         try:
+            selected_window = context_window(selected.id, selected.provider_model)
+        except Exception:
+            selected_window = None
+        try:
             status_code, body = chat_completion(selected, payload)
             # Internal marker from the provider client: Retry-After on a 429/5xx
             # becomes this model's runtime cooldown (never leaks to the caller).
@@ -1428,7 +1441,7 @@ def chat_completions(request: ChatCompletionRequest, raw_request: Request):
                 if request.stream:
                     # Usage arrives in the final SSE chunk (stream_options.include_usage),
                     # so the route event is persisted after the stream completes.
-                    stream_body = _stream_and_persist_usage(body, request_id, selected, capability, agent_name, tokens_raw=tokens_raw, tokens_compacted=tokens_compacted, demand=demand, prompt_preview=prompt_preview, messages_dropped=messages_dropped)
+                    stream_body = _stream_and_persist_usage(body, request_id, selected, capability, agent_name, tokens_raw=tokens_raw, tokens_compacted=tokens_compacted, demand=demand, prompt_preview=prompt_preview, messages_dropped=messages_dropped, context_budget=context_payload.selected_budget, context_action=context_payload.action, context_candidates_skipped=context_payload.skipped)
                     return StreamingResponse(stream_body, media_type="text/event-stream", headers={"x-proxyrouter-request-id": request_id, "x-proxyrouter-model": selected.id})
                 # A provider can return HTTP 200 with a body that is itself an error
                 # (no choices, empty content, quota/auth text) — treat that the same
@@ -1445,7 +1458,7 @@ def chat_completions(request: ChatCompletionRequest, raw_request: Request):
                         except Exception:
                             rescued = False
                     try:
-                        persist_route_event(request_id, selected.id, capability, "success", None, usage=usage, agent_name=agent_name, tokens_raw=tokens_raw, tokens_compacted=tokens_compacted, demand=demand, provider_model=selected.provider_model, prompt_preview=prompt_preview, messages_dropped=messages_dropped)
+                        persist_route_event(request_id, selected.id, capability, "success", None, usage=usage, agent_name=agent_name, tokens_raw=tokens_raw, tokens_compacted=tokens_compacted, demand=demand, provider_model=selected.provider_model, prompt_preview=prompt_preview, messages_dropped=messages_dropped, context_window=selected_window, context_budget=context_payload.selected_budget, context_action=context_payload.action, context_candidates_skipped=context_payload.skipped)
                     except Exception:
                         pass
                     if cache_key_value is not None:
@@ -1469,7 +1482,7 @@ def chat_completions(request: ChatCompletionRequest, raw_request: Request):
             last_error = {"status_code": status_code, "body": body, "model_id": selected.id}
             attempts.append({"model_id": selected.id, "provider": selected.provider, "status_code": status_code, "error_type": error_type})
             try:
-                persist_route_event(request_id, selected.id, capability, "provider_error", error_type, agent_name=agent_name, tokens_raw=tokens_raw, tokens_compacted=tokens_compacted, demand=demand, prompt_preview=prompt_preview, messages_dropped=messages_dropped)
+                persist_route_event(request_id, selected.id, capability, "provider_error", error_type, agent_name=agent_name, tokens_raw=tokens_raw, tokens_compacted=tokens_compacted, demand=demand, prompt_preview=prompt_preview, messages_dropped=messages_dropped, context_window=selected_window, context_budget=context_payload.selected_budget, context_action=context_payload.action, context_candidates_skipped=context_payload.skipped)
             except Exception:
                 pass
             try:
@@ -1481,7 +1494,7 @@ def chat_completions(request: ChatCompletionRequest, raw_request: Request):
             last_error = {"status_code": 502, "body": {"error": {"message": str(exc)}}, "model_id": selected.id}
             attempts.append({"model_id": selected.id, "provider": selected.provider, "status_code": None, "error_type": type(exc).__name__})
             try:
-                persist_route_event(request_id, selected.id, capability, "failed", type(exc).__name__, agent_name=agent_name, tokens_raw=tokens_raw, tokens_compacted=tokens_compacted, demand=demand, prompt_preview=prompt_preview, messages_dropped=messages_dropped)
+                persist_route_event(request_id, selected.id, capability, "failed", type(exc).__name__, agent_name=agent_name, tokens_raw=tokens_raw, tokens_compacted=tokens_compacted, demand=demand, prompt_preview=prompt_preview, messages_dropped=messages_dropped, context_window=selected_window, context_budget=context_payload.selected_budget, context_action=context_payload.action, context_candidates_skipped=context_payload.skipped)
             except Exception:
                 pass
             try:

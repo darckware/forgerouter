@@ -98,6 +98,10 @@ def chat_completion(model: ProviderModel, payload: dict[str, Any], timeout: floa
         from app.providers.anthropic_compatible import anthropic_chat_completion
 
         return anthropic_chat_completion(model, payload, timeout=max(timeout, 120.0))
+    # Local providers (e.g. Ollama) running on host CPU need a higher timeout ceiling
+    # so first-run model loading or CPU inference does not trigger a ReadTimeout.
+    if getattr(model, "access_type", "") == "local" or "11434" in model.base_url:
+        timeout = max(timeout, 180.0)
     url = model.base_url.rstrip("/") + "/chat/completions"
     headers = headers_for_model(model)
     if payload.get("stream"):

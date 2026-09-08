@@ -43,3 +43,23 @@ def test_partition_preserves_availability_when_count_is_unknown(monkeypatch):
     candidate = model("p/model", 1)
     monkeypatch.setattr("app.context_policy.context_window", lambda *_: 8_000)
     assert partition_candidates([candidate], None, 80, 32_000, virtual_route=True).fitting == [candidate]
+
+
+def test_partition_excludes_sub_64k_budget_from_truncation_target(monkeypatch):
+    # A candidate hard-excluded by the virtual-route floor is never viable
+    # regardless of truncation — its (possibly larger) budget must not
+    # inflate max_input_budget, or the truncation target could end up too
+    # generous to actually fit the candidates that ARE still in play.
+    unknown = model("p/unknown", 1)
+    sub_floor = model("p/known-small", 1)
+    windows = {"p/known-small": 50_000}
+    monkeypatch.setattr("app.context_policy.context_window", lambda public_id, _: windows.get(public_id))
+
+    result = partition_candidates(
+        [unknown, sub_floor], prompt_tokens=35_000,
+        trigger_percent=100, unknown_budget=32_000, virtual_route=True,
+    )
+
+    assert result.fitting == []
+    assert [m.id for m in result.excluded] == ["p/unknown", "p/known-small"]
+    assert result.max_input_budget == 32_000

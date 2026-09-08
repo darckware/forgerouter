@@ -64,7 +64,10 @@ def _compact_json_if_valid(text: str) -> str:
 
 
 def truncate_messages(
-    messages: list[dict[str, Any]], max_tokens: int, tools: list[dict[str, Any]] | None = None
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+    tools: list[dict[str, Any]] | None = None,
+    total_tokens: int | None = None,
 ) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]], bool]:
     """Lossy safety valve for a runaway conversation history — distinct from
     normalize_messages above (that one never removes content). Drops the
@@ -78,8 +81,12 @@ def truncate_messages(
     discarding outright use dropped_messages as the source text; fits is False
     when the protected content alone still exceeds max_tokens after every
     removable turn is gone (a token-counting failure never reports unfit).
+
+    `total_tokens`: skip the initial count when the caller already has it
+    for this exact `messages`/`tools` pair (chat_completions always does) —
+    avoids re-tokenizing the same, often very large, prompt twice.
     """
-    total = count_tokens(messages, tools)
+    total = total_tokens if total_tokens is not None else count_tokens(messages, tools)
     if total is None or total <= max_tokens:
         return messages, 0, [], True
     system_messages = [m for m in messages if m.get("role") == "system"]

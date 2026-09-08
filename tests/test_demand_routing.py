@@ -490,6 +490,23 @@ def test_models_endpoint_virtual_context_length_widens_beyond_the_chain_head_ban
     assert virtual["forgerouter/auto"] == 70_000
 
 
+def test_models_endpoint_code_pool_reaches_models_without_text_capability(monkeypatch):
+    # code/vision/audio are hard capability gates real routing checks
+    # directly via registry.healthy_for_capability(demand) (infer_capability
+    # returns the demand itself as the required capability) — a model with
+    # "code" but not "text" is reachable by real routing and must be
+    # reflected here too, not silently dropped by first filtering to the
+    # "text" pool and only then checking for "code" membership within it.
+    code_only = model("p/code-only", 1, ["code"])
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([code_only]))
+    _patch_context_window(monkeypatch, {"p/code-only": 90_000})
+
+    payload = client.get("/v1/models").json()["data"]
+    virtual = {item["id"]: item["context_length"] for item in payload if item["id"].startswith("forgerouter/")}
+
+    assert virtual["forgerouter/code"] == 90_000
+
+
 def test_models_endpoint_auto_excludes_content_gated_demands(monkeypatch):
     # vision/audio are only reachable when the request itself carries actual
     # image/audio content (resolve_demand's hard content requirement) — a

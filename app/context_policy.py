@@ -49,10 +49,15 @@ def partition_candidates(
     for candidate in candidates:
         window = context_window(candidate.id, candidate.provider_model)
         budget, known = model_context_budget(candidate, trigger_percent, unknown_budget)
-        budgets.append(budget)
         if virtual_route and known and window < MINIMUM_VIRTUAL_CONTEXT:
+            # Never viable regardless of truncation — its budget must not
+            # inflate max_input_budget, or a truncation target sized off a
+            # candidate that can never be selected could under-trim the
+            # prompt for every candidate that actually could have fit.
             excluded.append(candidate)
-        elif prompt_tokens <= budget:
+            continue
+        budgets.append(budget)
+        if prompt_tokens <= budget:
             (known_fit if known else unknown_fit).append(candidate)
         else:
             excluded.append(candidate)

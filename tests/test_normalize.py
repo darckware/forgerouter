@@ -100,6 +100,26 @@ def test_truncate_messages_leaves_small_conversations_untouched():
     assert dropped == 0
 
 
+def test_truncate_messages_uses_precomputed_total_instead_of_recounting():
+    # A caller that already knows the token count (chat_completions always
+    # does) can pass it in to skip the redundant initial count — prove it's
+    # actually consulted, not silently ignored, by passing a wrong total
+    # that claims "already fits" for a payload that would otherwise need
+    # truncating.
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": _big("only turn")},
+    ]
+    if count_tokens(messages) is None:
+        return
+
+    result, dropped, dropped_messages, fits = truncate_messages(messages, max_tokens=10, total_tokens=5)
+
+    assert result == messages
+    assert dropped == 0
+    assert fits is True
+
+
 def test_truncate_messages_drops_oldest_turns_keeps_system_and_last_turn():
     messages = [
         {"role": "system", "content": "system prompt"},

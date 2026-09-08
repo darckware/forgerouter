@@ -182,12 +182,20 @@ def _virtual_model_context_lengths(registry, allowed: set[str] | None = None) ->
     Hermes distrust a window it can actually always get; the real vision/
     audio safety check still happens per-request via app.context_policy.
     """
-    healthy = registry.healthy_for_capability("text")
-    if allowed is not None:
-        healthy = [model for model in healthy if model.id in allowed]
+    def reachable_pool(capability: str) -> list[Any]:
+        pool = registry.healthy_for_capability(capability)
+        return [model for model in pool if model.id in allowed] if allowed is not None else pool
+
+    healthy = reachable_pool("text")
     per_demand: dict[str, int] = {}
     for demand in DEMANDS:
-        pool = [model for model in healthy if demand in model.capabilities] if demand in ("vision", "audio", "code") else healthy
+        # vision/audio/code are hard capability requirements (same gate
+        # infer_capability uses for real routing) — reachable_pool(demand)
+        # matches registry.healthy_for_capability(demand) exactly, rather
+        # than filtering the "text" pool by capability membership, which
+        # would miss a model reachable by real routing that isn't
+        # "text"-capable itself.
+        pool = reachable_pool(demand) if demand in ("vision", "audio", "code") else healthy
         windows = [window for window in (context_window(m.id, m.provider_model) for m in pool) if window]
         per_demand[demand] = max(min(windows), VIRTUAL_MODEL_CONTEXT_LENGTH) if windows else VIRTUAL_MODEL_CONTEXT_LENGTH
     text_demands = [d for d in DEMANDS if d not in ("vision", "audio")]
@@ -1124,7 +1132,7 @@ def _prepare_context_payload(
     if not truncation_on:
         return ContextPayload(messages, [], tokens, 0, "rejected", len(partition.excluded), partition.max_input_budget)
     target_budget = partition.max_input_budget
-    trimmed, dropped, dropped_messages, fits = truncate_messages(messages, target_budget, tools)
+    trimmed, dropped, dropped_messages, fits = truncate_messages(messages, target_budget, tools, total_tokens=tokens)
     if not fits:
         return ContextPayload(trimmed, [], tokens, dropped, "rejected", len(partition.excluded), target_budget)
     action = "truncated"

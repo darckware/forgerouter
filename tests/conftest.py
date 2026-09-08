@@ -5,6 +5,11 @@ inherit it they hit the production database (registered agents flip /v1 and
 /admin into protected mode, and the DB registry replaces the YAML fixtures).
 Dropping the variable before app modules import makes every storage call fail
 fast, exercising the same fallbacks a DB outage does.
+
+Same reasoning for RECAPTCHA_SECRET_KEY: docker-compose's env_file loads the
+real production secret, which would make _verify_recaptcha stop fail-opening
+and start rejecting every /auth/login test that doesn't send a real token
+(reaching out to Google's siteverify API in the process).
 """
 
 import os
@@ -12,6 +17,7 @@ import os
 import pytest
 
 os.environ.pop("DATABASE_URL", None)
+os.environ.pop("RECAPTCHA_SECRET_KEY", None)
 
 
 @pytest.fixture(autouse=True)

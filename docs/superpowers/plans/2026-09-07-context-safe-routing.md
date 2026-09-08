@@ -1,5 +1,7 @@
 # Context-safe Routing Implementation Plan
 
+> **Status: implemented** (2026-09-08, commits `c9a0c09`..`746d953` + protocol/docs follow-up). Tasks 1-5 landed with two deliberate deviations found necessary during implementation, driven by a real production symptom (`forgerouter/auto` stuck advertising a flat 64k — see the investigation in that session): (1) `_virtual_model_context_lengths` computes each demand's guarantee from `app.demand.default_chain()`'s full reachable pool (every healthy+allowed candidate, since the chain only decides try-order and never restricts fallback membership) rather than threading a separate `configured_routes` chain-order parameter through — chain order turned out not to affect the min-window guarantee at all, since routing keeps every healthy candidate reachable regardless of configured order. (2) `forgerouter/auto`'s own minimum excludes `vision`/`audio` (content-gated demands unreachable by a plain-text caller) instead of taking the strict min across all 7 demands, so a demand a given caller can never trigger doesn't cap the number every ordinary conversation is quoted. See `CLAUDE.md`'s "Context-safe routing" bullet for the shipped contract.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Prevent ForgeRouter from knowingly sending oversized prompts, preserving full context when a model fits and summarizing/truncating only when none does.
@@ -54,7 +56,7 @@
 - Consumes: `ProviderModel`, `app.pricing.context_window`, ordered candidate lists.
 - Produces: `model_context_budget(model, trigger_percent, unknown_budget) -> tuple[int, bool]`, `partition_candidates(candidates, prompt_tokens, trigger_percent, unknown_budget, virtual_route) -> ContextPartition`, and `ContextPartition(fitting, excluded, max_input_budget)`.
 
-- [ ] **Step 1: Write failing policy tests**
+- [x] **Step 1: Write failing policy tests**
 
 ```python
 from app.context_policy import partition_candidates
@@ -106,7 +108,7 @@ def test_partition_preserves_availability_when_count_is_unknown(monkeypatch):
 
 The production mutation each test catches is respectively: unknown candidates incorrectly preceding known fits; the virtual 64k floor not enforced centrally; unsafe unknown candidates being attempted; and tokenizer failure causing an outage.
 
-- [ ] **Step 2: Run the policy tests and verify RED**
+- [x] **Step 2: Run the policy tests and verify RED**
 
 Run:
 
@@ -116,7 +118,7 @@ docker compose run --rm forgerouter pytest tests/test_context_policy.py -q
 
 Expected: FAIL because `app.context_policy` does not exist.
 
-- [ ] **Step 3: Implement the policy module minimally**
+- [x] **Step 3: Implement the policy module minimally**
 
 ```python
 from dataclasses import dataclass
@@ -158,11 +160,11 @@ def partition_candidates(candidates, prompt_tokens, trigger_percent, unknown_bud
     return ContextPartition(known_fit + unknown_fit, excluded, max(budgets, default=None))
 ```
 
-- [ ] **Step 4: Centralize the 64k rule**
+- [x] **Step 4: Centralize the 64k rule**
 
 Remove `_meets_minimum_context`, `_fits_prompt`, and `estimated_tokens` from `app/demand.py:218-267`. Restore `default_chain()` to pure demand/rank ordering. Update old tests that assert “deprioritize but retain” so they instead exercise `partition_candidates()` and the new hard virtual-route exclusion.
 
-- [ ] **Step 5: Run policy and demand tests**
+- [x] **Step 5: Run policy and demand tests**
 
 Run:
 
@@ -172,7 +174,7 @@ docker compose run --rm forgerouter pytest tests/test_context_policy.py tests/te
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 1**
+- [x] **Step 6: Commit Task 1**
 
 ```bash
 git add app/context_policy.py app/demand.py tests/test_context_policy.py tests/test_demand_routing.py
@@ -193,7 +195,7 @@ git commit -m "feat(routing): centralize context-fit policy"
 - Produces: `_context_too_large(prompt_tokens, max_input_budget) -> JSONResponse` and `_prepare_context_payload(messages, tools, candidates, registry, truncation_on, trigger_percent, unknown_budget, virtual_route) -> ContextPayload`.
 - `ContextPayload` contains `messages`, `candidates`, `tokens`, `messages_dropped`, `action`, `skipped`, and `selected_budget`.
 
-- [ ] **Step 1: Write failing endpoint tests for complete-payload filtering**
+- [x] **Step 1: Write failing endpoint tests for complete-payload filtering**
 
 ```python
 def test_chat_never_calls_known_candidate_that_cannot_fit(monkeypatch):
@@ -221,15 +223,15 @@ def test_chat_never_calls_known_candidate_that_cannot_fit(monkeypatch):
 
 Add a companion test where a known-fit model and an unknown-fit model both exist and the known model fails with 429; assert the unknown model is attempted second.
 
-- [ ] **Step 2: Run the new filtering tests and verify RED**
+- [x] **Step 2: Run the new filtering tests and verify RED**
 
 Run the two exact pytest node IDs. Expected: FAIL because the small/unknown candidate remains in current fallback ordering.
 
-- [ ] **Step 3: Move normalization and counting before context filtering**
+- [x] **Step 3: Move normalization and counting before context filtering**
 
 In `chat_completions()`, build `raw_messages`, apply `normalize_messages()` when enabled, and count `messages_for_payload` plus tools before context policy. Retain `tokens_raw` for accounting and name the normalized estimate `tokens_compacted`. Do not change cache-key input, which intentionally reflects the caller's original request.
 
-- [ ] **Step 4: Add the payload-preparation result type and 413 helper**
+- [x] **Step 4: Add the payload-preparation result type and 413 helper**
 
 ```python
 @dataclass(frozen=True)
@@ -252,19 +254,19 @@ def _context_too_large(prompt_tokens: int | None, max_input_budget: int | None) 
     }})
 ```
 
-- [ ] **Step 5: Implement the no-loss fitting path**
+- [x] **Step 5: Implement the no-loss fitting path**
 
 Call `partition_candidates()` after all existing candidate ordering. When `partition.fitting` is non-empty, return a `ContextPayload` with the original normalized messages and only fitting candidates. `action="none"`; `skipped=len(partition.excluded)`.
 
-- [ ] **Step 6: Write failing 413 tests**
+- [x] **Step 6: Write failing 413 tests**
 
 Cover truncation disabled and “system plus final turn alone is too large.” Assert status 413, `error.type == "context_too_large"`, zero provider calls, and zero unhealthy calls.
 
-- [ ] **Step 7: Run the 413 tests and verify RED**
+- [x] **Step 7: Run the 413 tests and verify RED**
 
 Expected: current code calls a provider or returns 502 rather than 413.
 
-- [ ] **Step 8: Implement largest-budget truncation and recount**
+- [x] **Step 8: Implement largest-budget truncation and recount**
 
 When no candidate fits:
 
@@ -295,15 +297,15 @@ if not safe.fitting:
 
 Call `count_tokens()` once per branch and store the result instead of repeating it. If counting unexpectedly becomes unavailable during recount, preserve availability and use the ordered candidate list.
 
-- [ ] **Step 9: Make `truncate_messages()` report an unfit protected tail**
+- [x] **Step 9: Make `truncate_messages()` report an unfit protected tail**
 
 Extend its return type to include `fits: bool`, computed by a final count after oldest removable turns are exhausted. Update all existing callers/tests. This distinguishes “nothing more can be removed” from successful truncation without duplicating turn-protection logic in `main.py`.
 
-- [ ] **Step 10: Replace the obsolete smallest-window regression**
+- [x] **Step 10: Replace the obsolete smallest-window regression**
 
 Replace `test_chat_truncation_budget_uses_minimum_window_across_all_fallback_candidates` with a test asserting a 200k/50k pool targets 160k (at 80%), drops history only if needed, and excludes the 50k model from the rebuilt fallback pool.
 
-- [ ] **Step 11: Run routing and normalization tests**
+- [x] **Step 11: Run routing and normalization tests**
 
 ```bash
 docker compose run --rm forgerouter pytest tests/test_context_policy.py tests/test_demand_routing.py tests/test_normalize.py tests/test_chat_fallback.py -q
@@ -311,7 +313,7 @@ docker compose run --rm forgerouter pytest tests/test_context_policy.py tests/te
 
 Expected: PASS.
 
-- [ ] **Step 12: Commit Task 2**
+- [x] **Step 12: Commit Task 2**
 
 ```bash
 git add app/main.py app/normalize.py tests/test_demand_routing.py tests/test_normalize.py
@@ -331,7 +333,7 @@ git commit -m "feat(routing): reject or compact oversized context safely"
 - Consumes: `find_agent_by_key()`, `agent_allowed_models()`, `get_demand_routes()`, and Task 1's virtual eligibility rule.
 - Produces: `_virtual_model_context_lengths(registry, allowed=None, configured_routes=None) -> dict[str, int]` and `_optional_agent_models(request) -> set[str] | None`.
 
-- [ ] **Step 1: Write failing model-metadata tests**
+- [x] **Step 1: Write failing model-metadata tests**
 
 Add tests that:
 
@@ -353,19 +355,19 @@ def test_models_virtual_context_uses_configured_chain_before_default(monkeypatch
 
 Also cover DB lookup failure: endpoint remains 200 and uses the unrestricted pool.
 
-- [ ] **Step 2: Run the exact tests and verify RED**
+- [x] **Step 2: Run the exact tests and verify RED**
 
 Expected: `/v1/models` ignores Authorization and `_virtual_model_context_lengths()` ignores configured routes.
 
-- [ ] **Step 3: Add optional agent scoping to `/v1/models`**
+- [x] **Step 3: Add optional agent scoping to `/v1/models`**
 
 Change the endpoint to `def models(raw_request: Request)`. Resolve a valid bearer key with `find_agent_by_key`; if resolved, load `agent_allowed_models`. Any lookup exception yields `allowed=None` and preserves the unrestricted discovery behavior. Unlike chat completion, model discovery remains public and does not return 401 for an absent/invalid key.
 
-- [ ] **Step 4: Make virtual metadata mirror reachable ordered pools**
+- [x] **Step 4: Make virtual metadata mirror reachable ordered pools**
 
 Pass `allowed` and a best-effort `get_demand_routes()` mapping into `_virtual_model_context_lengths()`. For each demand, build the configured/default ordered chain, append remaining capability-compatible healthy fallbacks, apply the virtual 64k eligibility rule, then take the minimum known raw window. An allowed unknown-window candidate lowers the advertised guarantee to 64k. `auto` remains the minimum of all demand results.
 
-- [ ] **Step 5: Run metadata and auth tests**
+- [x] **Step 5: Run metadata and auth tests**
 
 ```bash
 docker compose run --rm forgerouter pytest tests/test_demand_routing.py tests/test_v1_agent_auth.py tests/test_registry_and_chat.py -q
@@ -373,7 +375,7 @@ docker compose run --rm forgerouter pytest tests/test_demand_routing.py tests/te
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 3**
+- [x] **Step 6: Commit Task 3**
 
 ```bash
 git add app/main.py tests/test_demand_routing.py tests/test_v1_agent_auth.py
@@ -396,7 +398,7 @@ git commit -m "feat(models): scope virtual context to reachable agent routes"
 - Extends `persist_route_event(..., context_window=None, context_budget=None, context_action="none", context_candidates_skipped=0)`.
 - Extends `/admin/routes/recent` rows with the same four fields.
 
-- [ ] **Step 1: Write the idempotent migration**
+- [x] **Step 1: Write the idempotent migration**
 
 ```sql
 ALTER TABLE ai_router.route_events
@@ -406,7 +408,7 @@ ALTER TABLE ai_router.route_events
     ADD COLUMN IF NOT EXISTS context_candidates_skipped INTEGER NOT NULL DEFAULT 0;
 ```
 
-- [ ] **Step 2: Write failing storage mapping tests**
+- [x] **Step 2: Write failing storage mapping tests**
 
 Create `tests/test_storage_context.py` with a minimal context-manager fake around `app.storage.db_connect`:
 
@@ -472,19 +474,19 @@ def test_recent_routes_returns_context_diagnostics(monkeypatch):
 
 The mutation caught is silently dropping diagnostics at the SQL boundary.
 
-- [ ] **Step 3: Run the storage tests and verify RED**
+- [x] **Step 3: Run the storage tests and verify RED**
 
 Expected: unexpected keyword arguments or missing response keys.
 
-- [ ] **Step 4: Implement storage persistence and reads**
+- [x] **Step 4: Implement storage persistence and reads**
 
 Add the parameters, row keys, INSERT columns and bound values, SELECT columns, and response mapping. Use `None` for unknown window/budget, `"none"` for no context mutation, and `0` for no skipped candidates.
 
-- [ ] **Step 5: Propagate diagnostics through every persistence path**
+- [x] **Step 5: Propagate diagnostics through every persistence path**
 
 Pass `ContextPayload.action`, `.skipped`, and `.selected_budget`; pass the selected model's raw `context_window`. Extend `_stream_and_persist_usage()` so streaming success/failure persists identical diagnostics. For a pre-provider 413, persist one `selected_model_id=None`, `status="rejected"`, `error_type="context_too_large"` event in a best-effort try/except.
 
-- [ ] **Step 6: Run backend diagnostic tests**
+- [x] **Step 6: Run backend diagnostic tests**
 
 ```bash
 docker compose run --rm forgerouter pytest tests/test_storage_context.py tests/test_demand_routing.py tests/test_chat_fallback.py -q
@@ -492,7 +494,7 @@ docker compose run --rm forgerouter pytest tests/test_storage_context.py tests/t
 
 Expected: PASS.
 
-- [ ] **Step 7: Extend the Messages UI**
+- [x] **Step 7: Extend the Messages UI**
 
 Add to `RouteEvent`:
 
@@ -505,7 +507,7 @@ context_candidates_skipped: number;
 
 In the expanded message detail, show a compact line only when an action occurred or candidates were skipped, for example: `context summarized · budget 160k · 2 incompatible candidates skipped`. Reuse `formatContextLength()` and existing status classes.
 
-- [ ] **Step 8: Test and build the frontend**
+- [x] **Step 8: Test and build the frontend**
 
 ```bash
 cd frontend
@@ -515,7 +517,7 @@ npm run build
 
 Expected: all Node tests pass and Vite emits a production bundle without TypeScript/build errors.
 
-- [ ] **Step 9: Commit Task 4**
+- [x] **Step 9: Commit Task 4**
 
 ```bash
 git add db/053_context_routing_diagnostics.sql app/storage.py app/main.py tests frontend/src/main.tsx frontend/dist
@@ -537,7 +539,7 @@ Stage only test files actually changed by this task; do not stage unrelated dirt
 - Consumes: Task 2's OpenAI-compatible 413 response.
 - Produces: stable Anthropic Messages and OpenAI Responses error translations for `context_too_large`.
 
-- [ ] **Step 1: Add translator regression tests**
+- [x] **Step 1: Add translator regression tests**
 
 For `/v1/messages`, submit an oversized request under patched counts/windows and assert HTTP 413 with the existing pass-through body retaining `error.type == "context_too_large"`. For `/v1/responses`, assert the same HTTP 413 OpenAI-compatible envelope. Assert zero upstream provider calls for both.
 
@@ -561,7 +563,7 @@ assert calls == []
 
 For Messages, `PROTOCOL_PATH` is `/v1/messages` and the body contains `model`, `max_tokens`, and a user message. For Responses, it is `/v1/responses` and the body contains `model` and string `input`. Use each file's existing `model()` fixture/helper and request conventions rather than adding production-only test hooks.
 
-- [ ] **Step 2: Run both protocol tests**
+- [x] **Step 2: Run both protocol tests**
 
 ```bash
 docker compose run --rm forgerouter pytest tests/test_anthropic_messages.py tests/test_responses_api.py -q
@@ -569,7 +571,7 @@ docker compose run --rm forgerouter pytest tests/test_anthropic_messages.py test
 
 Expected: PASS because both endpoints already pass non-200 `JSONResponse` bodies through. If a regression is exposed, minimally repair the existing non-200 branch; do not duplicate context policy in either adapter.
 
-- [ ] **Step 3: Document the final routing contract**
+- [x] **Step 3: Document the final routing contract**
 
 Update the Context truncation and Demand routing sections in `CLAUDE.md` with:
 
@@ -579,7 +581,7 @@ Update the Context truncation and Demand routing sections in `CLAUDE.md` with:
 - protected-content overflow returns 413;
 - `/v1/models` virtual windows are agent/reachable-route aware.
 
-- [ ] **Step 4: Run focused verification**
+- [x] **Step 4: Run focused verification**
 
 ```bash
 docker compose run --rm forgerouter pytest \
@@ -589,7 +591,7 @@ docker compose run --rm forgerouter pytest \
 
 Expected: PASS with zero failures.
 
-- [ ] **Step 5: Run full verification**
+- [x] **Step 5: Run full verification**
 
 ```bash
 docker compose run --rm forgerouter pytest -q
@@ -599,17 +601,17 @@ cd .. && git diff --check
 
 Expected: all backend and frontend tests pass, Vite build succeeds, and `git diff --check` emits no output.
 
-- [ ] **Step 6: Review database rollout requirement**
+- [x] **Step 6: Review database rollout requirement**
 
 Confirm `db/053_context_routing_diagnostics.sql` is listed in the handoff as a required manual migration before deploying code that writes the new columns. Do not apply it to production automatically.
 
-- [ ] **Step 7: Commit Task 5**
+- [x] **Step 7: Commit Task 5**
 
 ```bash
 git add CLAUDE.md tests/test_anthropic_messages.py tests/test_responses_api.py frontend/dist
 git commit -m "docs: describe context-safe routing contract"
 ```
 
-- [ ] **Step 8: Request final code review**
+- [x] **Step 8: Request final code review**
 
 Use `superpowers:requesting-code-review` against the implementation commit range. Fix all Critical and Important findings, rerun the affected focused tests, then rerun the full verification command before claiming completion.

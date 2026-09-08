@@ -296,3 +296,22 @@ def test_responses_streams_function_call_arguments(monkeypatch):
     completed = next(e for e in events if e["type"] == "response.completed")
     assert completed["response"]["output"][0]["type"] == "function_call"
     assert json.loads(completed["response"]["output"][0]["arguments"]) == {"city": "SP"}
+
+
+def test_responses_returns_413_for_context_too_large(monkeypatch):
+    # /v1/responses passes chat_completions()' non-200 JSONResponse body
+    # through unchanged, so the OpenAI-compatible 413 propagates for free —
+    # this locks that contract in for the Responses protocol too.
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([model("p/small")]))
+    monkeypatch.setattr("app.main.count_tokens", lambda *_: 100_000)
+    monkeypatch.setattr("app.context_policy.context_window", lambda *_: 64_000)
+    monkeypatch.setattr("app.main.context_truncation_enabled", lambda: False)
+    monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
+    calls = []
+    monkeypatch.setattr("app.main.chat_completion", lambda selected, payload: calls.append(selected.id) or (200, {}))
+
+    response = client.post("/v1/responses", json={"model": "p/small", "input": "clima em SP?"})
+
+    assert response.status_code == 413
+    assert response.json()["error"]["type"] == "context_too_large"
+    assert calls == []

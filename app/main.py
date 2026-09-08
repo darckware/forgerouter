@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from app.context_policy import partition_candidates
 from app.demand import DEMAND_INFO, DEMANDS, VIRTUAL_MODELS, _message_text, default_chain, messages_have_audio, messages_have_images, resolve_demand
+from app.mcp_server import mcp_server
 from app.normalize import count_tokens, normalize_messages, truncate_messages
 from app.pricing import context_window
 from app.routing_state import (
@@ -110,6 +111,13 @@ from app.validation.scanner import build_scan_payload, scan_registry
 
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
+    async with mcp_server.session_manager.run():
+        async with _app_lifespan(app):
+            yield
+
+
+@contextlib.asynccontextmanager
+async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     # A fresh boot (or a model just added) has zero rows in ai_router.provider_health
     # for anything not yet scanned — both the dashboard (latest_provider_health_rows)
     # and routing (load_registry_with_db_health) then see "unknown"/the stale default
@@ -141,7 +149,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     yield
 
 
-app = FastAPI(title="ForgeRouter", version="0.1.0", lifespan=_lifespan)
+# docs_url/redoc_url/openapi_url are off: this service is reachable from the
+# public internet (forgerouter.darckware.net), and the schema they'd publish
+# includes every /admin/* route's shape — no secrets, but still not meant to
+# be world-readable. /v1/* and /admin/* stay reachable exactly as before;
+# only FastAPI's own auto-generated docs UI/schema are disabled.
+app = FastAPI(title="ForgeRouter", version="0.1.0", lifespan=_lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 # Virtual routes can select different concrete models. This is the floor of the
 # advertised contract — Hermes Agent's own hard minimum (agent/model_metadata.py:
@@ -377,6 +390,20 @@ class DiscoverModelsPayload(BaseModel):
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
+
+# Read-only(-ish) MCP surface over providers/models/agents — see
+# app/mcp_server.py for the tool list and its one destructive exception
+# (delete_agent, confirm-gated). Auth is per-tool (require_agent()), not at
+# the mount, so the app-level auth model stays identical to every other
+# endpoint's Bearer-token check. mcp_server itself is imported at module top
+# (needed by _lifespan, which wraps mcp_server.session_manager.run() — a
+# Mount doesn't forward ASGI lifespan events to its sub-app, so without this
+# every /mcp request 500s with "Task group is not initialized").
+#
+# streamable_http_path="/" — the sub-app's own internal route is its root;
+# app.mount("/mcp", ...) supplies the "/mcp" prefix. Passing the default
+# ("/mcp") here too would route the mount to /mcp/mcp instead.
+app.mount("/mcp", mcp_server.streamable_http_app(stateless_http=True, streamable_http_path="/"))
 
 
 @app.get("/")

@@ -1486,11 +1486,13 @@ function App() {
   function showPrompt(title: string, defaultValue = ''): Promise<string | null> {
     return new Promise((resolve) => setPromptModal({ title, value: defaultValue, resolve }));
   }
-  const [confirmModal, setConfirmModal] = useState<{ title: string; message: string; confirmLabel: string; resolve: (value: boolean) => void } | null>(null);
+  const [confirmModal, setConfirmModal] = useState<{ title: string; message: string; confirmLabel: string; danger: boolean; resolve: (value: boolean) => void } | null>(null);
   // Promise-based drop-in for window.confirm() — same as showPrompt above,
   // backed by the app's own modal instead of the browser's native dialog.
-  function showConfirm(title: string, message: string, confirmLabel = 'Confirm'): Promise<boolean> {
-    return new Promise((resolve) => setConfirmModal({ title, message, confirmLabel, resolve }));
+  // danger=true styles the confirm button red (Trash2 icon) for a
+  // destructive action instead of the default RefreshCw/primary styling.
+  function showConfirm(title: string, message: string, confirmLabel = 'Confirm', danger = false): Promise<boolean> {
+    return new Promise((resolve) => setConfirmModal({ title, message, confirmLabel, danger, resolve }));
   }
   const [newAgentKey, setNewAgentKey] = useState(generateAgentKey);
   const [creatingAgent, setCreatingAgent] = useState(false);
@@ -2341,7 +2343,7 @@ function App() {
   }
 
   async function removeAgent(name: string) {
-    if (!window.confirm(`Delete agent "${name}"? Its API key stops working immediately.`)) return;
+    if (!(await showConfirm('Delete agent', `Delete agent "${name}"? Its API key stops working immediately.`, 'Delete', true))) return;
     try {
       await fetchJson(`/admin/agents/${encodeURIComponent(name)}`, { method: 'DELETE' });
       if (selectedAgent === name) setSelectedAgent(null);
@@ -4128,7 +4130,9 @@ function App() {
             <p className="muted">{confirmModal.message}</p>
             <div className="modalActions">
               <button className="button secondary" autoFocus onClick={() => { confirmModal.resolve(false); setConfirmModal(null); }}>Cancel</button>
-              <button className="button" onClick={() => { confirmModal.resolve(true); setConfirmModal(null); }}><RefreshCw size={15} /> {confirmModal.confirmLabel}</button>
+              <button className={confirmModal.danger ? 'button danger' : 'button'} onClick={() => { confirmModal.resolve(true); setConfirmModal(null); }}>
+                {confirmModal.danger ? <Trash2 size={15} /> : <RefreshCw size={15} />} {confirmModal.confirmLabel}
+              </button>
             </div>
           </div>
         </div>

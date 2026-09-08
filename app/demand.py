@@ -3,15 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.pricing import context_window
 from app.ranking import dynamic_score, intelligence_score
 from app.registry import ProviderModel
-
-# Hermes Agent's own hard floor (agent/model_metadata.py: MINIMUM_CONTEXT_LENGTH) —
-# every Hermes session routed through forgerouter/* assumes at least this much
-# room and rejects/invalidates any backend window it discovers below it. A
-# demand chain must never let a known-smaller backend serve one of these routes.
-MINIMUM_CONTEXT_LENGTH = 64_000
 
 # Demand classes, from cheapest to deepest. Each routes to a chain of models:
 # a custom chain stored in ai_router.demand_routes, or a rank-derived default.
@@ -215,28 +208,10 @@ def classify_request(messages: list[Any], has_tools: bool) -> str:
     return "complex"
 
 
-def _meets_minimum_context(model: ProviderModel, minimum: int = MINIMUM_CONTEXT_LENGTH) -> bool:
-    """True when the model's real context window is unknown (no catalog data
-    to judge by — stays neutral, never penalized for a missing entry) or at
-    least `minimum`."""
-    window = context_window(model.id, model.provider_model)
-    return window is None or window >= minimum
-
-
-def _fits_prompt(model: ProviderModel, estimated_tokens: int | None) -> bool:
-    """True when no estimate was given, the window is unknown (neutral), or
-    the model's real window comfortably covers the estimated prompt."""
-    if not estimated_tokens:
-        return True
-    window = context_window(model.id, model.provider_model)
-    return window is None or window >= estimated_tokens
-
-
 def default_chain(
     models: list[ProviderModel],
     demand: str,
     performance: dict[str, Any] | None = None,
-    estimated_tokens: int | None = None,
 ) -> list[ProviderModel]:
     """Rank-derived chain for a demand when no custom chain is configured.
 
@@ -246,18 +221,11 @@ def default_chain(
     even while misbehaving); the order *within* the chain uses dynamic_score,
     so recently failing/slow models sink without changing class.
 
-    Two context-window signals apply before banding: models with a known real
-    window under the Hermes floor are dropped (unless that would empty the
-    pool — the last resort is never fully excluded), and among what's left,
-    models that can't comfortably fit `estimated_tokens` sort after those that
-    can, within their band — reordered, never excluded, since an unhealthy
-    fallback is still better than none.
+    Pure demand/rank ordering — context-window fit and the Hermes-minimum
+    floor are enforced centrally by app.context_policy.partition_candidates()
+    downstream of this ordering, not duplicated here.
     """
-    eligible = [model for model in models if _meets_minimum_context(model)] or models
-    by_score_desc = sorted(
-        eligible,
-        key=lambda model: (not _fits_prompt(model, estimated_tokens), -dynamic_score(model.id, performance)),
-    )
+    by_score_desc = sorted(models, key=lambda model: -dynamic_score(model.id, performance))
     if demand in ("vision", "audio", "code"):
         # Vision/audio/code are catalog particularities: only models with the capability may serve them.
         return [model for model in by_score_desc if demand in model.capabilities]

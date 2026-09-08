@@ -1177,14 +1177,12 @@ def chat_completions(request: ChatCompletionRequest, raw_request: Request):
             # No configured/default chain applies to the downgraded general pool —
             # rank every healthy candidate best-to-worst (same dynamic_score used
             # to order every other chain) instead of a fixed demand-specific list.
-            # Same Hermes-minimum-context filter as default_chain (never fully
-            # excluding the last resort when every candidate falls short).
-            from app.demand import _meets_minimum_context
+            # Context-window fit is enforced centrally by app.context_policy
+            # downstream of this ordering, not duplicated here.
             from app.ranking import dynamic_score
 
             performance = model_performance_cached()
-            eligible = [model for model in candidates if _meets_minimum_context(model)] or candidates
-            chain_ids = [model.id for model in sorted(eligible, key=lambda model: -dynamic_score(model.id, performance))]
+            chain_ids = [model.id for model in sorted(candidates, key=lambda model: -dynamic_score(model.id, performance))]
         else:
             try:
                 chain_ids = get_demand_routes().get(demand) or []
@@ -1193,7 +1191,7 @@ def chat_completions(request: ChatCompletionRequest, raw_request: Request):
             if not chain_ids:
                 chain_ids = [
                     model.id
-                    for model in default_chain(candidates, demand, performance=model_performance_cached(), estimated_tokens=tokens_raw)
+                    for model in default_chain(candidates, demand, performance=model_performance_cached())
                 ]
         order = {model_id: position for position, model_id in enumerate(chain_ids)}
         # Sticky routing: the last model that succeeded for this agent+demand goes

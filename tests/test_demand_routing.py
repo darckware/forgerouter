@@ -178,42 +178,16 @@ def test_default_chain_bands_by_rank():
     assert chain_reasoning == [big]
 
 
-def test_default_chain_excludes_models_below_hermes_minimum_context(monkeypatch):
-    # Hermes Agent hard-rejects any backend context window under 64_000
-    # (agent/model_metadata.py: MINIMUM_CONTEXT_LENGTH) — a demand chain must
-    # never surface one as a candidate when a bigger one is available.
-    tiny = model("groq/llama-3.3-70b-versatile", 1)
-    roomy = model("openrouter/deepseek-r1:free", 2)
-    windows = {"groq/llama-3.3-70b-versatile": 32_000, "openrouter/deepseek-r1:free": 128_000}
-    monkeypatch.setattr("app.demand.context_window", lambda public_id, provider_model: windows.get(public_id))
+def test_default_chain_is_pure_rank_order_regardless_of_context_window(monkeypatch):
+    # Context-window fit (the Hermes-minimum floor and prompt-size fit) is no
+    # longer default_chain's job — app.context_policy.partition_candidates()
+    # owns it centrally, downstream of this ordering. A tiny/unknown window
+    # must not change or drop anything here.
+    tiny = model("groq/llama-3.3-70b-versatile", 1)  # score 41
+    roomy = model("openrouter/qwen2.5-72b-instruct", 2)  # score 40
+    monkeypatch.setattr("app.pricing.context_window", lambda public_id, provider_model: {"groq/llama-3.3-70b-versatile": 8_000}.get(public_id))
 
-    chain = default_chain([tiny, roomy], "standard")
-
-    assert chain == [roomy]
-
-
-def test_default_chain_falls_back_to_unfiltered_pool_when_all_below_minimum(monkeypatch):
-    # Never drop to zero candidates — a sub-minimum pool is still better than
-    # no_healthy_provider (matches the reserves/breaker/near_limit "deprioritize,
-    # never fully exclude the last resort" convention elsewhere in the router).
-    only = model("local/qwen2.5:1.5b", 4)
-    monkeypatch.setattr("app.demand.context_window", lambda public_id, provider_model: 8_000)
-
-    chain = default_chain([only], "simple")
-
-    assert chain == [only]
-
-
-def test_default_chain_prioritizes_models_that_fit_the_estimated_prompt(monkeypatch):
-    # Both same band (score 30-49, "standard") and both meet the 64k Hermes
-    # floor, but only one has room for a 100k-token prompt — it must be tried
-    # first, without dropping the smaller one.
-    roomy = model("groq/llama-3.3-70b-versatile", 1)  # score 41
-    snug = model("openrouter/qwen2.5-72b-instruct", 2)  # score 40
-    windows = {"groq/llama-3.3-70b-versatile": 200_000, "openrouter/qwen2.5-72b-instruct": 70_000}
-    monkeypatch.setattr("app.demand.context_window", lambda public_id, provider_model: windows.get(public_id))
-
-    chain = default_chain([snug, roomy], "standard", estimated_tokens=100_000)
+    chain = default_chain([roomy, tiny], "standard")
 
     assert [m.id for m in chain] == ["groq/llama-3.3-70b-versatile", "openrouter/qwen2.5-72b-instruct"]
 
@@ -304,35 +278,11 @@ def test_chat_code_demand_falls_back_when_no_code_capable_model(monkeypatch):
     assert persisted["capability"] != "code"
 
 
-def test_chat_downgraded_general_pool_deprioritizes_models_below_hermes_minimum_context(monkeypatch):
-    # Same downgraded-pool scenario as above, but the higher-scored model's
-    # real window falls short of Hermes' 64k floor — it must be tried after
-    # the smaller-score model that actually meets it, not first by score
-    # alone. It stays a reachable last-resort fallback (never fully dropped
-    # from the candidate pool), just not the first attempt.
-    sub_minimum_high_score = model("openrouter/deepseek-r1:free", 2, ["text", "reasoning"])  # score 60
-    meets_minimum_low_score = model("local/qwen2.5:1.5b", 4)  # score 12
-    monkeypatch.setattr(
-        "app.main.load_registry_with_db_health",
-        lambda: ProviderRegistry([meets_minimum_low_score, sub_minimum_high_score]),
-    )
-    monkeypatch.setattr("app.main.get_demand_routes", lambda: {})
-    monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
-    windows = {"openrouter/deepseek-r1:free": 32_000, "local/qwen2.5:1.5b": 70_000}
-    monkeypatch.setattr("app.demand.context_window", lambda public_id, provider_model: windows.get(public_id))
-
-    calls = []
-
-    def fake_chat_completion(selected, payload):
-        calls.append(selected.id)
-        return 200, {"choices": [{"message": {"content": "OK"}}]}
-
-    monkeypatch.setattr("app.main.chat_completion", fake_chat_completion)
-
-    response = client.post("/v1/chat/completions", json={"model": "forgerouter/code", "messages": [msg("refatore a função de login")]})
-
-    assert response.status_code == 200
-    assert calls == ["local/qwen2.5:1.5b"]
+# The sub-minimum-context deprioritization case formerly covered here now
+# belongs to the request-level context policy (app.context_policy,
+# integrated into chat_completions()) instead of demand ordering — see
+# tests/test_context_policy.py for the hard virtual-route exclusion, and the
+# chat_completions-level fit tests added alongside it.
 
 
 def test_chat_truncation_budget_uses_minimum_window_across_all_fallback_candidates(monkeypatch):
@@ -383,9 +333,9 @@ def test_models_endpoint_exposes_virtual_models(monkeypatch):
 def _patch_context_window(monkeypatch, windows: dict[str, int]):
     fake = lambda public_id, provider_model: windows.get(public_id)
     monkeypatch.setattr("app.pricing.context_window", fake)
-    monkeypatch.setattr("app.demand.context_window", fake)
     monkeypatch.setattr("app.registry.context_window", fake)
     monkeypatch.setattr("app.main.context_window", fake)
+    monkeypatch.setattr("app.context_policy.context_window", fake)
 
 
 def test_models_endpoint_exposes_real_context_length_for_concrete_models(monkeypatch):

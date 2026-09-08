@@ -196,7 +196,14 @@ def _virtual_model_context_lengths(registry, allowed: set[str] | None = None) ->
         # would miss a model reachable by real routing that isn't
         # "text"-capable itself.
         pool = reachable_pool(demand) if demand in ("vision", "audio", "code") else healthy
-        windows = [window for window in (context_window(m.id, m.provider_model) for m in pool) if window]
+        # A known window under the floor is never actually selectable for a
+        # virtual route (app.context_policy.partition_candidates excludes it
+        # the same way at request time) — it must not drag this guarantee
+        # down to a worst case real routing could never produce.
+        windows = [
+            window for window in (context_window(m.id, m.provider_model) for m in pool)
+            if window and window >= VIRTUAL_MODEL_CONTEXT_LENGTH
+        ]
         per_demand[demand] = max(min(windows), VIRTUAL_MODEL_CONTEXT_LENGTH) if windows else VIRTUAL_MODEL_CONTEXT_LENGTH
     text_demands = [d for d in DEMANDS if d not in ("vision", "audio")]
     per_demand["auto"] = min((per_demand[d] for d in text_demands), default=VIRTUAL_MODEL_CONTEXT_LENGTH)

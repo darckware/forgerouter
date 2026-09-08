@@ -507,6 +507,23 @@ def test_models_endpoint_code_pool_reaches_models_without_text_capability(monkey
     assert virtual["forgerouter/code"] == 90_000
 
 
+def test_models_endpoint_ignores_known_sub_floor_window_in_the_guarantee(monkeypatch):
+    # A known window under the 64k floor is never actually selectable for a
+    # virtual route — app.context_policy.partition_candidates hard-excludes
+    # it at request time the same way. It must not drag the advertised
+    # guarantee down to a worst case real routing could never produce.
+    roomy = model("p/roomy", 1, ["text", "code"])
+    sub_floor = model("p/sub-floor", 2, ["text", "code"])
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([roomy, sub_floor]))
+    _patch_context_window(monkeypatch, {"p/roomy": 300_000, "p/sub-floor": 32_000})
+
+    payload = client.get("/v1/models").json()["data"]
+    virtual = {item["id"]: item["context_length"] for item in payload if item["id"].startswith("forgerouter/")}
+
+    assert virtual["forgerouter/code"] == 300_000
+    assert virtual["forgerouter/auto"] == 300_000
+
+
 def test_models_endpoint_auto_excludes_content_gated_demands(monkeypatch):
     # vision/audio are only reachable when the request itself carries actual
     # image/audio content (resolve_demand's hard content requirement) — a

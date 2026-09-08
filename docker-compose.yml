@@ -6,6 +6,11 @@ services:
     container_name: forgerouter
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgresql://proxyrouter_user:${POSTGRES_PASSWORD}@forgerouter_postgres:5432/forgerouter
+      POSTGRES_HOST: forgerouter_postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: forgerouter
     ports:
       - "127.0.0.1:2100:2100"
     volumes:

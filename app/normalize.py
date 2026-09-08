@@ -65,7 +65,7 @@ def _compact_json_if_valid(text: str) -> str:
 
 def truncate_messages(
     messages: list[dict[str, Any]], max_tokens: int, tools: list[dict[str, Any]] | None = None
-) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]], bool]:
     """Lossy safety valve for a runaway conversation history — distinct from
     normalize_messages above (that one never removes content). Drops the
     oldest *turns* (a user message plus everything up to, but not including,
@@ -74,12 +74,14 @@ def truncate_messages(
     System messages and the final turn (the request actually being answered)
     are always kept, even if that alone still exceeds max_tokens — there is
     nothing left to safely cut at that point. Returns (messages, turns_dropped,
-    dropped_messages) — callers that want to summarize instead of discarding
-    outright use the third element as the source text.
+    dropped_messages, fits) — callers that want to summarize instead of
+    discarding outright use dropped_messages as the source text; fits is False
+    when the protected content alone still exceeds max_tokens after every
+    removable turn is gone (a token-counting failure never reports unfit).
     """
     total = count_tokens(messages, tools)
     if total is None or total <= max_tokens:
-        return messages, 0, []
+        return messages, 0, [], True
     system_messages = [m for m in messages if m.get("role") == "system"]
     rest = [m for m in messages if m.get("role") != "system"]
     turns: list[list[dict[str, Any]]] = []
@@ -95,7 +97,10 @@ def truncate_messages(
             break
         dropped_messages.extend(turns[0])
         turns.pop(0)
-    return system_messages + [m for turn in turns for m in turn], len(dropped_messages), dropped_messages
+    result = system_messages + [m for turn in turns for m in turn]
+    final_tokens = count_tokens(result, tools)
+    fits = final_tokens is None or final_tokens <= max_tokens
+    return result, len(dropped_messages), dropped_messages, fits
 
 
 def normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

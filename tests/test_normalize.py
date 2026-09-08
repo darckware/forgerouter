@@ -92,7 +92,7 @@ def test_truncate_messages_leaves_small_conversations_untouched():
         {"role": "assistant", "content": "hello!"},
     ]
 
-    result, dropped, dropped_messages = truncate_messages(messages, max_tokens=50_000)
+    result, dropped, dropped_messages, fits = truncate_messages(messages, max_tokens=50_000)
 
     if count_tokens(messages) is None:
         return  # tiktoken unavailable — degrade gracefully like the rest of this file
@@ -112,7 +112,7 @@ def test_truncate_messages_drops_oldest_turns_keeps_system_and_last_turn():
     if count_tokens(messages) is None:
         return
 
-    result, dropped, dropped_messages = truncate_messages(messages, max_tokens=3_000)
+    result, dropped, dropped_messages, fits = truncate_messages(messages, max_tokens=3_000)
 
     assert dropped > 0
     assert dropped_messages
@@ -121,9 +121,13 @@ def test_truncate_messages_drops_oldest_turns_keeps_system_and_last_turn():
     # The final turn (what's actually being answered) always survives.
     assert result[-1] == {"role": "user", "content": "final question"}
     assert count_tokens(result) <= count_tokens(messages)
+    assert fits is True
 
 
-def test_truncate_messages_never_drops_the_only_remaining_turn():
+def test_truncate_messages_reports_unfit_when_protected_content_alone_overflows():
+    # System + final turn alone still exceeds the budget after every
+    # removable turn is gone — fits must say so instead of pretending the
+    # (still oversized) result is safe to send.
     messages = [
         {"role": "system", "content": "system prompt"},
         {"role": "user", "content": _big("only turn, way over budget on its own")},
@@ -131,11 +135,12 @@ def test_truncate_messages_never_drops_the_only_remaining_turn():
     if count_tokens(messages) is None:
         return
 
-    result, dropped, dropped_messages = truncate_messages(messages, max_tokens=10)
+    result, dropped, dropped_messages, fits = truncate_messages(messages, max_tokens=10)
 
     assert dropped == 0
     assert result == messages
     assert dropped_messages == []
+    assert fits is False
 
 
 def test_truncate_messages_keeps_tool_response_paired_with_its_assistant_turn():
@@ -150,7 +155,7 @@ def test_truncate_messages_keeps_tool_response_paired_with_its_assistant_turn():
     if count_tokens(messages) is None:
         return
 
-    result, dropped, dropped_messages = truncate_messages(messages, max_tokens=3_000)
+    result, dropped, dropped_messages, fits = truncate_messages(messages, max_tokens=3_000)
 
     # Either the whole first turn (user + tool_call + tool response + reply)
     # survives, or it's dropped as one unit — the tool message is never left

@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.demand import classify_request, default_chain, resolve_demand
 from app.main import ChatCompletionRequest, ChatMessage, app, infer_capability
+from app.normalize import count_tokens
 from app.registry import ProviderModel, ProviderRegistry
 
 client = TestClient(app)
@@ -197,6 +198,10 @@ def test_chat_routes_by_demand_chain(monkeypatch):
     mid = model("groq/llama-3.3-70b-versatile", 1)
     monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([mid, small]))
     monkeypatch.setattr("app.main.get_demand_routes", lambda: {})
+    # Neutral context windows: this test is about demand-chain ordering, not
+    # context fit — a real catalog match for "llama-3.3-70b-versatile" would
+    # otherwise let the known-fit-first context policy jump it ahead.
+    monkeypatch.setattr("app.context_policy.context_window", lambda *a: None)
     persisted = {}
     monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: persisted.update(kwargs))
 
@@ -225,6 +230,7 @@ def test_chat_demand_chain_falls_back(monkeypatch):
     monkeypatch.setattr("app.main.get_demand_routes", lambda: {"simple": ["local/qwen2.5:1.5b"]})
     monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.main.mark_runtime_failure_unhealthy", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.context_policy.context_window", lambda *a: None)
 
     calls = []
 
@@ -285,32 +291,140 @@ def test_chat_code_demand_falls_back_when_no_code_capable_model(monkeypatch):
 # chat_completions-level fit tests added alongside it.
 
 
-def test_chat_truncation_budget_uses_minimum_window_across_all_fallback_candidates(monkeypatch):
-    # Regression for the pre-fix bug: the budget was computed from
-    # candidates[0]'s window only, so a payload trimmed to fit a big first
-    # pick could still overflow a smaller fallback candidate's real window.
+def test_chat_truncation_targets_largest_viable_budget_and_excludes_smaller_candidates(monkeypatch):
+    # Regression for the pre-fix bug: the budget was computed from the
+    # SMALLEST window across the whole fallback pool, so a request could get
+    # truncated far more than necessary even when the actually-selected
+    # candidate had a much bigger real window. It must instead target the
+    # LARGEST viable budget (200k * 80% = 160k here), drop history only if
+    # that's still not enough, and then exclude any candidate whose own
+    # budget (50k * 80% = 40k) still can't hold the trimmed result from the
+    # retry pool — rather than trying it and letting the provider reject it.
     big_window = model("groq/llama-3.3-70b-versatile", 1)
     small_window = model("openrouter/qwen-2.5-7b-instruct", 2)
     monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([big_window, small_window]))
     windows = {"groq/llama-3.3-70b-versatile": 200_000, "openrouter/qwen-2.5-7b-instruct": 50_000}
-    monkeypatch.setattr("app.main.context_window", lambda public_id, provider_model: windows.get(public_id))
+    monkeypatch.setattr("app.context_policy.context_window", lambda public_id, provider_model: windows.get(public_id))
+    monkeypatch.setattr("app.main.context_truncation_enabled", lambda: True)
+    monkeypatch.setattr("app.main.context_truncation_trigger_percent", lambda: 80)
+    monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
+
+    # Old droppable turn (~70k tokens) + a protected final turn (~100k tokens):
+    # over the 160k big-model budget together, but the final turn alone sits
+    # between the small model's 40k budget and the big model's 160k one.
+    old_turn = "filler word " * 35_000
+    final_turn = "filler word " * 50_000
+    if count_tokens([msg(old_turn), msg(final_turn)]) is None:
+        return  # tiktoken unavailable — degrade gracefully like tests/test_normalize.py
+
+    calls = []
+    monkeypatch.setattr(
+        "app.main.chat_completion",
+        lambda selected, payload: calls.append(selected.id) or (200, {"choices": [{"message": {"content": "OK"}}]}),
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "groq/llama-3.3-70b-versatile", "messages": [msg(old_turn), msg(final_turn)]},
+    )
+
+    assert response.status_code == 200
+    # Only the big-window model is tried — the small one never had a chance
+    # to fit the trimmed result and was excluded from the retry pool up front.
+    assert calls == ["groq/llama-3.3-70b-versatile"]
+
+
+def test_chat_never_calls_known_candidate_that_cannot_fit(monkeypatch):
+    roomy, small = model("p/roomy", 1), model("p/small", 2)
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([roomy, small]))
+    monkeypatch.setattr("app.main.count_tokens", lambda *_: 60_000)
+    windows = {"p/roomy": 100_000, "p/small": 50_000}
+    monkeypatch.setattr("app.context_policy.context_window", lambda public_id, _: windows.get(public_id))
+    monkeypatch.setattr("app.main.context_truncation_trigger_percent", lambda: 100)
+    monkeypatch.setattr("app.main.context_truncation_max_tokens", lambda: 32_000)
+    monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
+    calls = []
+
+    def provider_call(selected, payload):
+        calls.append(selected.id)
+        return 200, {"choices": [{"message": {"content": "OK"}}]}
+
+    monkeypatch.setattr("app.main.chat_completion", provider_call)
+
+    response = client.post("/v1/chat/completions", json={"model": "p/roomy", "messages": [msg("large")]})
+
+    assert response.status_code == 200
+    assert calls == ["p/roomy"]
+
+
+def test_chat_falls_back_to_unknown_window_candidate_when_known_fit_fails(monkeypatch):
+    # Both fit (known's real window, unknown's fallback budget) — known
+    # sorts first (a documented window beats a guess), but a 429 there must
+    # still fail over to the unknown-but-fitting candidate.
+    known, unknown = model("p/known", 1), model("p/unknown", 2)
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([known, unknown]))
+    monkeypatch.setattr("app.main.count_tokens", lambda *_: 20_000)
+    monkeypatch.setattr("app.context_policy.context_window", lambda public_id, _: {"p/known": 100_000}.get(public_id))
+    monkeypatch.setattr("app.main.context_truncation_trigger_percent", lambda: 100)
+    monkeypatch.setattr("app.main.context_truncation_max_tokens", lambda: 32_000)
+    monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.main.mark_runtime_failure_unhealthy", lambda *args, **kwargs: None)
+    calls = []
+
+    def provider_call(selected, payload):
+        calls.append(selected.id)
+        if selected.id == "p/known":
+            return 429, {"error": {"message": "rate limit"}}
+        return 200, {"choices": [{"message": {"content": "OK"}}]}
+
+    monkeypatch.setattr("app.main.chat_completion", provider_call)
+
+    response = client.post("/v1/chat/completions", json={"model": "p/known", "messages": [msg("hi")]})
+
+    assert response.status_code == 200
+    assert calls == ["p/known", "p/unknown"]
+
+
+def test_chat_rejects_with_413_when_truncation_disabled_and_nothing_fits(monkeypatch):
+    small = model("p/small", 1)
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([small]))
+    monkeypatch.setattr("app.main.count_tokens", lambda *_: 100_000)
+    monkeypatch.setattr("app.context_policy.context_window", lambda *_: 50_000)
+    monkeypatch.setattr("app.main.context_truncation_trigger_percent", lambda: 100)
+    monkeypatch.setattr("app.main.context_truncation_enabled", lambda: False)
+    monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
+    calls = []
+    monkeypatch.setattr("app.main.chat_completion", lambda selected, payload: calls.append(selected.id) or (200, {}))
+
+    response = client.post("/v1/chat/completions", json={"model": "p/small", "messages": [msg("large")]})
+
+    assert response.status_code == 413
+    assert response.json()["error"]["type"] == "context_too_large"
+    assert calls == []
+
+
+def test_chat_rejects_with_413_when_protected_content_alone_overflows(monkeypatch):
+    # Truncation is ON, but the only message (system-less, single turn) is
+    # itself bigger than the only candidate's budget — nothing droppable can
+    # make it fit, so it must reject rather than send an oversized payload.
+    small = model("p/small", 1)
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([small]))
+    monkeypatch.setattr("app.context_policy.context_window", lambda *_: 50_000)
     monkeypatch.setattr("app.main.context_truncation_enabled", lambda: True)
     monkeypatch.setattr("app.main.context_truncation_trigger_percent", lambda: 100)
     monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
+    calls = []
+    monkeypatch.setattr("app.main.chat_completion", lambda selected, payload: calls.append(selected.id) or (200, {}))
 
-    captured = {}
+    huge_final_turn = "filler word " * 40_000  # ~80k tokens — over the 50k budget alone
+    if count_tokens([msg(huge_final_turn)]) is None:
+        return
 
-    def fake_truncate(messages, budget, tools):
-        captured["budget"] = budget
-        return messages, 0, []
+    response = client.post("/v1/chat/completions", json={"model": "p/small", "messages": [msg(huge_final_turn)]})
 
-    monkeypatch.setattr("app.main.truncate_messages", fake_truncate)
-    monkeypatch.setattr("app.main.chat_completion", lambda selected, payload: (200, {"choices": [{"message": {"content": "OK"}}]}))
-
-    response = client.post("/v1/chat/completions", json={"model": "groq/llama-3.3-70b-versatile", "messages": [msg("oi")]})
-
-    assert response.status_code == 200
-    assert captured["budget"] == 50_000
+    assert response.status_code == 413
+    assert response.json()["error"]["type"] == "context_too_large"
+    assert calls == []
 
 
 def test_models_endpoint_exposes_virtual_models(monkeypatch):

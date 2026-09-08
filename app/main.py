@@ -11,6 +11,7 @@ import re
 import secrets
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request
@@ -19,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, Field
 
+from app.context_policy import partition_candidates
 from app.demand import DEMAND_INFO, DEMANDS, VIRTUAL_MODELS, _message_text, default_chain, messages_have_audio, messages_have_images, resolve_demand
 from app.normalize import count_tokens, normalize_messages, truncate_messages
 from app.pricing import context_window
@@ -31,7 +33,7 @@ from app.routing_state import (
     sticky_model,
 )
 from app.rate_ledger import near_ceiling, record_attempt, record_rate_limit_hit
-from app.registry import load_registry, load_registry_with_db_health, provider_readiness
+from app.registry import ProviderModel, load_registry, load_registry_with_db_health, provider_readiness
 from app.providers.openai_compatible import build_chat_payload, build_embeddings_payload, chat_completion, embeddings
 from app.deploy_config import apply_agent_deploy_config
 from app import response_cache
@@ -1022,6 +1024,88 @@ def _summarize_dropped_context(dropped_messages: list[dict[str, Any]], registry:
         return None
 
 
+@dataclass(frozen=True)
+class ContextPayload:
+    messages: list[dict[str, Any]]
+    candidates: list[ProviderModel]
+    tokens: int | None
+    messages_dropped: int
+    action: str
+    skipped: int
+    selected_budget: int | None
+
+
+def _context_too_large(prompt_tokens: int | None, max_input_budget: int | None) -> JSONResponse:
+    return JSONResponse(
+        status_code=413,
+        content={
+            "error": {
+                "message": "The protected prompt content exceeds every available model context window.",
+                "type": "context_too_large",
+                "prompt_tokens": prompt_tokens,
+                "max_input_budget": max_input_budget,
+            }
+        },
+    )
+
+
+def _prepare_context_payload(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    candidates: list[ProviderModel],
+    registry: Any,
+    truncation_on: bool,
+    trigger_percent: int,
+    unknown_budget: int,
+    virtual_route: bool,
+) -> ContextPayload:
+    """Never knowingly hand a candidate a prompt bigger than its real usable
+    window. When at least one candidate already fits, the payload goes out
+    untouched and the candidate pool narrows to only those that fit
+    (action="none"). When none fit, truncates toward the largest budget any
+    candidate could use, retrying the fit check on the trimmed result
+    (action="truncated"/"summarized"). When nothing helps — truncation is
+    off, or the protected content (system + final turn) alone overflows
+    every candidate — action="rejected" signals the caller to return 413
+    without ever making a provider call."""
+    try:
+        tokens = count_tokens(messages, tools)
+    except Exception:
+        tokens = None
+    partition = partition_candidates(candidates, tokens, trigger_percent, unknown_budget, virtual_route)
+    if partition.fitting:
+        return ContextPayload(messages, partition.fitting, tokens, 0, "none", len(partition.excluded), partition.max_input_budget)
+    if not truncation_on:
+        return ContextPayload(messages, [], tokens, 0, "rejected", len(partition.excluded), partition.max_input_budget)
+    target_budget = partition.max_input_budget
+    trimmed, dropped, dropped_messages, fits = truncate_messages(messages, target_budget, tools)
+    if not fits:
+        return ContextPayload(trimmed, [], tokens, dropped, "rejected", len(partition.excluded), target_budget)
+    action = "truncated"
+    if dropped:
+        summary = _summarize_dropped_context(dropped_messages, registry)
+        if summary:
+            insert_at = sum(1 for message in trimmed if message.get("role") == "system")
+            summarized = trimmed[:insert_at] + [{
+                "role": "system",
+                "content": f"[Earlier conversation summary — {dropped} message(s) condensed to save context]\n{summary}",
+            }] + trimmed[insert_at:]
+            try:
+                summarized_tokens = count_tokens(summarized, tools)
+            except Exception:
+                summarized_tokens = None
+            if summarized_tokens is not None and summarized_tokens <= target_budget:
+                trimmed, action = summarized, "summarized"
+    try:
+        trimmed_tokens = count_tokens(trimmed, tools)
+    except Exception:
+        trimmed_tokens = None
+    safe = partition_candidates(candidates, trimmed_tokens, trigger_percent, unknown_budget, virtual_route)
+    if not safe.fitting:
+        return ContextPayload(trimmed, [], trimmed_tokens, dropped, "rejected", len(safe.excluded), target_budget)
+    return ContextPayload(trimmed, safe.fitting, trimmed_tokens, dropped, action, len(safe.excluded), target_budget)
+
+
 @app.post("/v1/chat/completions")
 def chat_completions(request: ChatCompletionRequest, raw_request: Request):
     # Attribute the request to the agent whose API key is on the Authorization header.
@@ -1249,39 +1333,40 @@ def chat_completions(request: ChatCompletionRequest, raw_request: Request):
             messages_for_payload = raw_messages
     else:
         messages_for_payload = raw_messages
-    messages_dropped = 0
     try:
-        if context_truncation_enabled():
-            # The smallest real window among ALL candidates that may actually be
-            # tried, not just candidates[0]: the budget must hold even if the
-            # fallover lands on a candidate with less room than the first pick,
-            # or a fallback attempt can still overflow its own provider's real
-            # context limit after being "safely" truncated for a bigger one.
-            known_windows = [w for w in (context_window(model.id, model.provider_model) for model in candidates) if w]
-            window = min(known_windows) if known_windows else None
-            budget = (
-                int(window * context_truncation_trigger_percent() / 100)
-                if window
-                else context_truncation_max_tokens()
-            )
-            messages_for_payload, messages_dropped, dropped_messages = truncate_messages(
-                messages_for_payload, budget, request.tools
-            )
-            if messages_dropped:
-                summary = _summarize_dropped_context(dropped_messages, registry)
-                if summary:
-                    insert_at = sum(1 for m in messages_for_payload if m.get("role") == "system")
-                    summary_message = {
-                        "role": "system",
-                        "content": f"[Earlier conversation summary — {messages_dropped} message(s) condensed to save context]\n{summary}",
-                    }
-                    messages_for_payload = messages_for_payload[:insert_at] + [summary_message] + messages_for_payload[insert_at:]
+        truncation_on = context_truncation_enabled()
     except Exception:
-        messages_dropped = 0
+        truncation_on = False
     try:
-        tokens_compacted = count_tokens(messages_for_payload, request.tools)
+        trigger_percent = context_truncation_trigger_percent()
     except Exception:
-        tokens_compacted = None
+        trigger_percent = 80
+    try:
+        unknown_budget = context_truncation_max_tokens()
+    except Exception:
+        unknown_budget = 32_000
+    # Never knowingly call a candidate whose real usable window is smaller
+    # than the prompt: partition down to only the candidates that fit,
+    # truncating toward the largest viable budget first if none do, and
+    # rejecting outright (413) only when nothing helps.
+    context_payload = _prepare_context_payload(
+        messages_for_payload, request.tools, candidates, registry,
+        truncation_on, trigger_percent, unknown_budget, demand is not None,
+    )
+    if context_payload.action == "rejected":
+        try:
+            persist_route_event(
+                request_id, None, capability, "rejected", "context_too_large",
+                agent_name=agent_name, tokens_raw=tokens_raw, tokens_compacted=context_payload.tokens,
+                demand=demand, prompt_preview=prompt_preview, messages_dropped=context_payload.messages_dropped,
+            )
+        except Exception:
+            pass
+        return _context_too_large(context_payload.tokens, context_payload.selected_budget)
+    messages_for_payload = context_payload.messages
+    candidates = context_payload.candidates
+    messages_dropped = context_payload.messages_dropped
+    tokens_compacted = context_payload.tokens
     for selected in candidates:
         payload = build_chat_payload(
             selected,

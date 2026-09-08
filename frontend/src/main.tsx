@@ -5,7 +5,8 @@ import * as Select from '@radix-ui/react-select';
 import { Activity, AlertTriangle, ArrowLeft, AudioLines, Bot, Boxes, Brain, Check, CheckCircle2, CheckCheck, ChevronDown, ChevronUp, Code, Copy, CopyPlus, DollarSign, ExternalLink, Eye, EyeOff, HeartPulse, ImagePlus, Info, KeyRound, Layers, LayoutDashboard, Link2, Loader2, LogOut, MessageSquare, Monitor, Moon, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Plus, Power, PowerOff, RefreshCw, Route, Save, Scissors, Send, ShieldCheck, Shuffle, SignalHigh, SignalLow, SignalMedium, SlidersHorizontal, Sun, Terminal, Trash2, Type, User, UsersRound, Wrench, X } from 'lucide-react';
 import './style.css';
 import { selectedSubscriptionPlan, selectedSubscriptionPlanName, subscriptionPlanAuthUrl } from './subscriptionPlans';
-import { modelIdsForCostClass, nextAgentModelsForToggle, type CostClass } from './agentModelGroups';
+import { modelIdsForCostClass, allModelIdsForCostClass, nextAgentModelsForToggle, type CostClass } from './agentModelGroups';
+import { hermesAgentConfig } from './agentClientConfigs';
 
 type ProviderHealth = { provider: string; model_id: string; tier: number; status: string; http_code: number | null; latency_ms: number | null; error_message: string | null; checked_at: string | null; };
 type RouteEvent = { route_id: number; request_id: string; model_id: string | null; required_capability: string; status: string; error_type: string | null; created_at: string | null; total_tokens: number | null; cost: number; reference_cost: number | null; agent: string | null; demand: string | null; prompt_preview: string | null; messages_dropped: number | null; };
@@ -1360,11 +1361,11 @@ const AGENT_CLIENTS: AgentClientDef[] = [
   {
     id: 'hermes-agent',
     label: 'Hermes Agent',
-    hint: 'Matches the profile contract in /root/.hermes/profiles/<name>/config.yaml. context_length: 64000 is required — below it, Hermes Agent refuses forgerouter/* virtual models at startup.',
+    hint: 'Matches the profile contract in /root/.hermes/profiles/<name>/config.yaml. Context length is discovered from ForgeRouter /v1/models so it follows the safe window advertised for forgerouter/auto.',
     filename: 'config.yaml',
     baseUrlKind: 'v1',
     embedsSecret: true,
-    block: (baseUrl, keyToken) => `model:\n  provider: forgerouter\n  default: forgerouter/auto\n  context_length: 64000\nproviders:\n  forgerouter:\n    base_url: ${baseUrl}\n    default_model: forgerouter/auto\n    transport: chat_completions\n    api_key: ${keyToken}`,
+    block: hermesAgentConfig,
   },
   {
     id: 'antigravity-cli',
@@ -2584,25 +2585,21 @@ function App() {
     });
   }
   function modelsInCostClass(costClass: CostClass): string[] {
-    return modelIdsForCostClass(registry, healthByModel, costClass);
+    return modelIdsForCostClass(registry, costClass);
   }
-  async function toggleAgentModelSet(agent: AgentInfo, ids: string[], label: string) {
-    if (!ids.length || togglingGroup) return;
+  function allModelsInCostClass(costClass: CostClass): string[] {
+    return allModelIdsForCostClass(registry, costClass);
+  }
+  async function toggleAgentModelSet(agent: AgentInfo, ids: string[], label: string, allIdsInClass?: string[]) {
+    if ((!ids.length && !allIdsInClass?.length) || togglingGroup) return;
     const current = new Set(agent.models);
-    // "Any on -> turn off" rather than "all on -> turn off": a model that
-    // belongs to more than one group (e.g. vision+reasoning) gets removed by
-    // whichever group's badge is clicked first. Requiring *every* member
-    // present before allowing a disable meant that removal permanently kept
-    // the other group "incomplete" — so its own next click always looked
-    // like "turn everything on" and silently re-added the model the first
-    // click had just turned off.
-    const anyOn = ids.some((id) => current.has(id));
-    const next = nextAgentModelsForToggle(agent.models, ids);
+    const anyOn = ids.some((id) => current.has(id)) || (allIdsInClass?.some((id) => current.has(id)) ?? false);
+    const next = nextAgentModelsForToggle(agent.models, ids, allIdsInClass);
     const key = `${agent.name}:${label}`;
     setTogglingGroup(key);
     try {
       await fetchJson(`/admin/agents/${encodeURIComponent(agent.name)}/models`, { method: 'PUT', body: JSON.stringify({ models: next }) });
-      setScanStatus(`${agent.name}: ${label} ${anyOn ? 'disabled' : 'enabled'} (${ids.length} models)`);
+      setScanStatus(`${agent.name}: ${label} ${anyOn ? 'disabled' : 'enabled'} (${anyOn ? (allIdsInClass?.filter((id) => current.has(id)).length ?? ids.length) : ids.length} models)`);
       await loadAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : `Failed to toggle ${label} for ${agent.name}`);
@@ -3161,21 +3158,22 @@ function App() {
                         <i key={cap} className={`cap agentChip${count === 0 ? ' groupEmpty' : ''}`}>{cap} {count}</i>
                       ))}
                     </span>
-                    <span className="caps agentGroups" title="Healthy models by cost/access classification — click to enable or disable the group">
+                    <span className="caps agentGroups" title="Models by cost/access classification — click to enable or disable the group">
                       {(['free', 'paid', 'local'] as CostClass[]).map((costClass) => {
                         const groupIds = modelsInCostClass(costClass);
-                        const count = groupIds.filter((id) => agent.models.includes(id)).length;
+                        const allClassIds = allModelsInCostClass(costClass);
+                        const count = allClassIds.filter((id) => agent.models.includes(id)).length;
                         const pressed = count === 0 ? false : count === groupIds.length ? true : 'mixed';
                         return (
                           <button
                             key={costClass}
                             type="button"
-                            className={`cap groupToggle cost${costClass.charAt(0).toUpperCase()}${count === 0 ? ' groupEmpty' : ''}${togglingGroup === `${agent.name}:${costClass}` ? ' toggling' : ''}`}
+                            className={`cap groupToggle cost${costClass.charAt(0).toUpperCase() + costClass.slice(1)}${count === 0 ? ' groupEmpty' : ''}${togglingGroup === `${agent.name}:${costClass}` ? ' toggling' : ''}`}
                             title={`Click to ${count > 0 ? 'disable' : 'enable'} all ${costClass} models for ${agent.name}`}
                             aria-pressed={pressed}
                             aria-busy={togglingGroup === `${agent.name}:${costClass}`}
-                            disabled={!groupIds.length || Boolean(togglingGroup)}
-                            onClick={() => void toggleAgentModelSet(agent, groupIds, costClass)}
+                            disabled={(!groupIds.length && !count) || Boolean(togglingGroup)}
+                            onClick={() => void toggleAgentModelSet(agent, groupIds, costClass, allClassIds)}
                           >{costClass} {count}</button>
                         );
                       })}

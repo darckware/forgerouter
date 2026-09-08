@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { modelIdsForCostClass, nextAgentModelsForToggle } from '../src/agentModelGroups.ts';
+import { modelIdsForCostClass, allModelIdsForCostClass, nextAgentModelsForToggle } from '../src/agentModelGroups.ts';
 
 const registry = [
   {
@@ -46,8 +46,8 @@ const health = {
   'free/provider-disabled': 'healthy',
 };
 
-test('cost toggles target only healthy enabled free models', () => {
-  assert.deepEqual(modelIdsForCostClass(registry, health, 'free'), ['free/healthy']);
+test('cost toggles include all catalog models of that class even if offline', () => {
+  assert.deepEqual(modelIdsForCostClass(registry, health, 'free'), ['free/healthy', 'free/down']);
 });
 
 test('local access wins over the provider cost flag', () => {
@@ -63,5 +63,25 @@ test('group toggle turns any active subset off, then turns the whole group on', 
   assert.deepEqual(
     nextAgentModelsForToggle(['unrelated/model'], ['free/healthy', 'free/second']),
     ['unrelated/model', 'free/healthy', 'free/second'],
+  );
+});
+
+test('allModelIdsForCostClass returns all models regardless of provider enabled state', () => {
+  assert.deepEqual(allModelIdsForCostClass(registry, 'free'), [
+    'free/healthy',
+    'free/down',
+    'free/disabled',
+    'free/provider-disabled',
+  ]);
+});
+
+test('group toggle with allModelsInClass removes any model in that class', () => {
+  assert.deepEqual(
+    nextAgentModelsForToggle(
+      ['free/healthy', 'free/provider-disabled', 'unrelated/model'],
+      ['free/healthy'],
+      ['free/healthy', 'free/down', 'free/disabled', 'free/provider-disabled'],
+    ),
+    ['unrelated/model'],
   );
 });

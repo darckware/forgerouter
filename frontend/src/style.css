@@ -82,7 +82,7 @@ html.light{--bg:#eef0f3;--surface:#ffffff;--surface2:#f7f8fa;--raised:#f3f4f6;--
 .form h3{margin:6px 0 10px;font-size:14px;color:var(--text3)}
 .form label.check{flex-direction:row;align-items:center;gap:8px}
 .form label.check input{width:auto}
-.modelRow{display:grid;grid-template-columns:1.6fr 1.6fr 2.4fr auto auto auto auto;gap:10px;align-items:center;margin-bottom:10px}
+.modelRow{display:grid;grid-template-columns:1.6fr 1.6fr 2.4fr auto auto auto auto auto;gap:10px;align-items:center;margin-bottom:10px}
 .row{grid-template-columns:.7fr 1.9fr .3fr .45fr .5fr 1.3fr .65fr .5fr .7fr}
 .rank{display:inline-block;background:#172554;color:#93c5fd;border-radius:999px;padding:4px 10px;font-size:12px}
 .caps{display:flex;flex-wrap:wrap;gap:4px}

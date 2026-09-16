@@ -201,5 +201,29 @@
  "mistral/codestral-latest": {
   "context_window": 256000,
   "context_source": "mistral.ai/news/codestral, 2026-09 (confirmed; corrects stale 32000 entry in model_pricing.json to match codestral-2508)"
+ },
+ "openrouter/cohere/north-mini-code:free": {
+  "context_window": 256000,
+  "context_source": "docs.cohere.com/docs/north-mini-code-1.0, 2026-09 (confirmed; same model as Kilo/cohere/north-mini-code:free)"
+ },
+ "openrouter/dots-studio/dots-3-note-preview:free": {
+  "context_window": 512000,
+  "context_source": "modelgrep.com/models/dots-studio/dots-3-note-preview:free, 2026-09 (confirmed; same model as Kilo/dots-studio/dots-3-note-preview:free)"
+ },
+ "openrouter/inclusionai/ling-3.0-flash-fin:free": {
+  "context_window": 256000,
+  "context_source": "huggingface.co/inclusionAI/Ling-3.0-flash, 2026-09 (base-family value, uncertain; same model as Kilo/inclusionai/ling-3.0-flash-fin:free)"
+ },
+ "openrouter/inclusionai/ling-3.0-flash-sante:free": {
+  "context_window": 256000,
+  "context_source": "huggingface.co/inclusionAI/Ling-3.0-flash, 2026-09 (base-family value, uncertain; same model as Kilo/inclusionai/ling-3.0-flash-sante:free)"
+ },
+ "openrouter/nvidia/nemotron-3.5-lightning:free": {
+  "context_window": 262144,
+  "context_source": "docs.nvidia.com/nim (nemotron-3.5-lightning), 2026-09 (confirmed; same model as Kilo/nvidia/nemotron-3.5-lightning:free)"
+ },
+ "openrouter/nvidia/nemotron-3.5-content-safety:free": {
+  "context_window": 128000,
+  "context_source": "huggingface.co/blog/nvidia/nemotron-3-5-content-safety, 2026-09 (confirmed -- NOTE: safety classifier, not a general chat/tool model; same model as Kilo/nvidia/nemotron-3.5-content-safety:free)"
  }
 }

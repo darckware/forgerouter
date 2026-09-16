@@ -103,6 +103,7 @@ from app.storage import (
     set_agent_kind,
     set_agent_models,
     set_aux_tasks_agent,
+    set_model_blocked,
     set_models_enabled_from_health,
     sync_agent_model_associations,
     associate_all_healthy_models_to_all_agents,
@@ -2841,6 +2842,46 @@ def admin_agent_delete(name: str, request: Request):
 
 class DemandRoutesPayload(BaseModel):
     models: list[str] = Field(default_factory=list)
+
+
+class ModelBlockPayload(BaseModel):
+    public_id: str
+    blocked: bool
+    reason: str | None = None
+
+
+@app.post("/admin/models/block")
+def admin_model_block(payload: ModelBlockPayload, request: Request):
+    """Definitive block/unblock for one model, independent of provider saves
+    and of the next health scan. Blocked = off on purpose (manual_off), never
+    confused with "currently failing health checks" -- distinct states the
+    dashboard already renders separately. `reason` is accepted for the audit
+    trail (route_events / logs) but not persisted as a column today."""
+    auth_error = require_admin(request)
+    if auth_error:
+        return auth_error
+    if not payload.public_id.strip():
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": "public_id is required", "type": "invalid_payload"}},
+        )
+    try:
+        matched = set_model_blocked(payload.public_id, payload.blocked)
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"message": str(exc), "type": "model_block_failed"}},
+        )
+    if not matched:
+        return JSONResponse(
+            status_code=404,
+            content={"error": {"message": f"Model not found: {payload.public_id}", "type": "model_not_found"}},
+        )
+    try:
+        sync_agent_model_associations()
+    except Exception:
+        pass  # block/unblock already committed; the agent-list sync is best-effort
+    return {"status": "saved", "public_id": payload.public_id, "blocked": payload.blocked, "reason": payload.reason}
 
 
 @app.get("/admin/demand-routes")

@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import ReCAPTCHA from 'react-google-recaptcha';
 import * as Select from '@radix-ui/react-select';
-import { Activity, AlertTriangle, ArrowLeft, AudioLines, Bot, Boxes, Brain, Check, CheckCircle2, CheckCheck, ChevronDown, ChevronUp, Code, Copy, CopyPlus, DollarSign, ExternalLink, Eye, EyeOff, HeartPulse, ImagePlus, Info, KeyRound, Layers, LayoutDashboard, Link2, Loader2, LogOut, MessageSquare, Monitor, Moon, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Plus, Power, PowerOff, RefreshCw, Route, Save, Scissors, Send, ShieldCheck, Shuffle, SignalHigh, SignalLow, SignalMedium, SlidersHorizontal, Sun, Terminal, Trash2, Type, User, UsersRound, Wrench, X } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowLeft, AudioLines, Ban, Bot, Boxes, Brain, Check, CheckCircle2, CheckCheck, ChevronDown, ChevronUp, Code, Copy, CopyPlus, DollarSign, ExternalLink, Eye, EyeOff, HeartPulse, ImagePlus, Info, KeyRound, Layers, LayoutDashboard, Link2, Loader2, LogOut, MessageSquare, Monitor, Moon, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Plus, Power, PowerOff, RefreshCw, Route, Save, Scissors, Send, ShieldCheck, Shuffle, SignalHigh, SignalLow, SignalMedium, SlidersHorizontal, Sun, Terminal, Trash2, Type, User, UsersRound, Wrench, X } from 'lucide-react';
 import './style.css';
 import { selectedSubscriptionPlan, selectedSubscriptionPlanName, subscriptionPlanAuthUrl } from './subscriptionPlans';
 import { modelIdsForCostClass, allModelIdsForCostClass, nextAgentModelsForToggle, type CostClass } from './agentModelGroups';
@@ -2032,6 +2032,25 @@ function App() {
     }
   }
 
+  // Definitive per-model block/unblock -- distinct from the automatic health
+  // toggle: a blocked model stays off no matter what the next scan finds
+  // (manual_off), and it's one click, not "open the provider, find the row,
+  // uncheck, save the whole provider". Never confuse this with a model that's
+  // just currently failing health checks -- that's the "down" status badge,
+  // not this button.
+  async function toggleModelBlocked(publicId: string, currentlyBlocked: boolean) {
+    try {
+      await fetchJson('/admin/models/block', {
+        method: 'POST',
+        body: JSON.stringify({ public_id: publicId, blocked: !currentlyBlocked }),
+      });
+      setScanStatus(`${publicId}: ${currentlyBlocked ? 'unblocked — eligible for routing again' : 'blocked — will never be routed to, regardless of health'}`);
+      await loadAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to block/unblock the model');
+    }
+  }
+
   async function removeProvider(name: string) {
     if (!window.confirm(`Delete provider "${name}" and all of its models?`)) return;
     try {
@@ -3681,6 +3700,14 @@ function App() {
                       <b className="rank" title="AI intelligence rank">{model.score ?? scoreByModel[model.id] ?? '-'}</b>
                       <b className={`status ${model.health ?? healthByModel[model.id] ?? 'unknown'}`}>{model.health ?? healthByModel[model.id] ?? 'not scanned'}</b>
                       <label className="check"><input type="checkbox" checked={model.enabled} onChange={(e) => updateModel(index, { enabled: e.target.checked })} /> on</label>
+                      {editingOriginalName && model.id.trim() && (
+                        <button
+                          type="button"
+                          className={`iconButton${model.enabled === false ? ' active' : ''}`}
+                          title={model.enabled === false ? 'Blocked on purpose — click to unblock (this is different from "down"/unhealthy)' : 'Block definitively — never routed to again, regardless of health, until unblocked here'}
+                          onClick={() => void toggleModelBlocked(model.id, model.enabled === false)}
+                        ><Ban size={15} /></button>
+                      )}
                       <button className="iconButton" title="Remove model" onClick={() => setEditing({ ...editing, models: editing.models.filter((_, i) => i !== index) })}><Trash2 size={15} /></button>
                     </div>
                   ))}

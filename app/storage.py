@@ -92,6 +92,29 @@ def set_models_enabled_from_health(results: list[HealthResult]) -> int:
     return changed
 
 
+def set_model_blocked(public_id: str, blocked: bool) -> bool:
+    """Definitive, one-click block/unblock for a single model -- distinct from
+    the automatic health toggle (set_models_enabled_from_health): this always
+    wins over the next health scan (manual_off=True), same guarantee a
+    dashboard provider save gives today, just without needing to resend the
+    whole provider. A blocked model is "off on purpose", never "not
+    responding" -- the two states main.tsx already renders differently.
+    Returns whether a row matched."""
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE ai_router.models
+                SET enabled = %s, manual_off = %s
+                WHERE public_id = %s
+                """,
+                (not blocked, blocked, public_id),
+            )
+            matched = cur.rowcount > 0
+        conn.commit()
+    return matched
+
+
 def latest_health_by_model() -> dict[str, str]:
     # Runtime failures (rate limits, timeouts) expire after a cooldown: the model becomes
     # routable again and, if it fails once more, gets re-marked. Scanner verdicts persist.

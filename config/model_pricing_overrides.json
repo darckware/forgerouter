@@ -7,7 +7,9 @@
  "Kilo/nvidia/nemotron-3-super-120b-a12b:free": {
   "input_cost_per_token": 8e-08,
   "output_cost_per_token": 4.5e-07,
-  "source": "openrouter.ai/nvidia/nemotron-3-super-120b-a12b (same model, free-tier alias), 2026-07"
+  "source": "openrouter.ai/nvidia/nemotron-3-super-120b-a12b (same model, free-tier alias), 2026-07",
+  "context_window": 1000000,
+  "context_source": "developer.nvidia.com/blog (nemotron-3-super), 2026-09 (confirmed)"
  },
  "nvidia/nvidia/nemotron-3-ultra-550b-a55b": {
   "input_cost_per_token": 5e-07,
@@ -17,7 +19,9 @@
  "Kilo/nvidia/nemotron-3-ultra-550b-a55b:free": {
   "input_cost_per_token": 5e-07,
   "output_cost_per_token": 2.2e-06,
-  "source": "openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b (same model, free-tier alias), 2026-07"
+  "source": "openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b (same model, free-tier alias), 2026-07",
+  "context_window": 262144,
+  "context_source": "docs.nvidia.com/nim (nemotron-3-ultra), 2026-09 (confirmed)"
  },
  "opencode zen/nemotron-3-ultra-free": {
   "input_cost_per_token": 5e-07,
@@ -82,7 +86,9 @@
  "cloudflare/qwen/qwen2.5-coder-32b-instruct": {
   "input_cost_per_token": 6.6e-07,
   "output_cost_per_token": 1e-06,
-  "source": "developers.cloudflare.com/workers-ai/models/qwen2.5-coder-32b-instruct, 2026-07"
+  "source": "developers.cloudflare.com/workers-ai/models/qwen2.5-coder-32b-instruct, 2026-07",
+  "context_window": 32768,
+  "context_source": "developers.cloudflare.com/workers-ai/models/qwen2.5-coder-32b-instruct, 2026-09 (confirmed, BELOW 64k floor)"
  },
  "nvidia/minimaxai/minimax-m2.7": {
   "input_cost_per_token": 2.4e-07,
@@ -93,5 +99,107 @@
   "input_cost_per_token": 2e-07,
   "output_cost_per_token": 4e-07,
   "source": "openrouter.ai/poolside/laguna-m.1 (same model, free-tier alias), 2026-07 (verified directly on page, not just aggregator snippet)"
+ },
+ "openai-codex/gpt-6-astra": {
+  "context_window": 1050000,
+  "context_source": "openai.com/index/gpt-6-astra, 2026-09 (confirmed)"
+ },
+ "gemini_studio/models/gemini-robotics-er-2-preview": {
+  "context_window": 131072,
+  "context_source": "deepmind.google/models/model-cards/gemini-robotics-er-2, 2026-09 (confirmed)"
+ },
+ "groq/groq/compound": {
+  "context_window": 131072,
+  "context_source": "console.groq.com/docs/compound/systems/compound, 2026-09 (confirmed)"
+ },
+ "Kilo/cohere/north-mini-code:free": {
+  "context_window": 256000,
+  "context_source": "docs.cohere.com/docs/north-mini-code-1.0, 2026-09 (confirmed)"
+ },
+ "Kilo/dots-studio/dots-3-note-preview:free": {
+  "context_window": 512000,
+  "context_source": "modelgrep.com/models/dots-studio/dots-3-note-preview:free, 2026-09 (confirmed)"
+ },
+ "Kilo/inclusionai/ling-3.0-flash-fin:free": {
+  "context_window": 256000,
+  "context_source": "huggingface.co/inclusionAI/Ling-3.0-flash, 2026-09 (base-family value, variant page not found -- uncertain)"
+ },
+ "Kilo/inclusionai/ling-3.0-flash-sante:free": {
+  "context_window": 256000,
+  "context_source": "huggingface.co/inclusionAI/Ling-3.0-flash, 2026-09 (base-family value, variant page not found -- uncertain)"
+ },
+ "Kilo/liquid/lfm-2.5-2.6b:free": {
+  "context_window": 131072,
+  "context_source": "marktechpost.com/2026/08/06/liquid-ai-lfm2-5-2-6b-on-device-agentic-model, 2026-09 (confirmed)"
+ },
+ "Kilo/nvidia/nemotron-3.5-lightning:free": {
+  "context_window": 262144,
+  "context_source": "docs.nvidia.com/nim (nemotron-3.5-lightning), 2026-09 (confirmed)"
+ },
+ "Kilo/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": {
+  "context_window": 256000,
+  "context_source": "developer.nvidia.com/blog (nemotron-3-nano-omni), 2026-09 (confirmed)"
+ },
+ "Kilo/poolside/laguna-s-2.1:free": {
+  "context_window": 1048576,
+  "context_source": "poolside.ai/blog/introducing-laguna-s-2-1, 2026-09 (confirmed)"
+ },
+ "Kilo/stepfun/step-3.7-flash:free": {
+  "context_window": 262144,
+  "context_source": "huggingface.co/stepfun-ai/Step-3.7-Flash, 2026-09 (confirmed)"
+ },
+ "mistral/ministral-14b-2512": {
+  "context_window": 256000,
+  "context_source": "docs.mistral.ai/models/ministral-3-14b-25-12, 2026-09 (confirmed)"
+ },
+ "mistral/ministral-14b-latest": {
+  "context_window": 256000,
+  "context_source": "docs.mistral.ai/models/ministral-3-14b-25-12, 2026-09 (confirmed, alias)"
+ },
+ "mistral/ministral-3b-2512": {
+  "context_window": 256000,
+  "context_source": "docs.mistral.ai/models/ministral-3-3b-25-12, 2026-09 (confirmed)"
+ },
+ "mistral/ministral-3b-latest": {
+  "context_window": 256000,
+  "context_source": "docs.mistral.ai/models/ministral-3-3b-25-12, 2026-09 (confirmed, alias)"
+ },
+ "llm7/minimax-m2.7": {
+  "context_window": 204800,
+  "context_source": "github.com/cline/cline/pull/10007 (MiniMax M2.7 docs), 2026-09 (confirmed)"
+ },
+ "Kilo/nvidia/nemotron-3.5-content-safety:free": {
+  "context_window": 128000,
+  "context_source": "huggingface.co/blog/nvidia/nemotron-3-5-content-safety, 2026-09 (confirmed -- NOTE: this is a safety classifier, not a general chat/tool model)"
+ },
+ "mistral/mistral-code-fim-latest": {
+  "context_window": 256000,
+  "context_source": "mistral.ai/news/codestral, 2026-09 (UNCERTAIN -- exact provider_model page not independently confirmed, assumed same lineage as codestral-2508)"
+ },
+ "mistral/mistral-code-latest": {
+  "context_window": 256000,
+  "context_source": "mistral.ai/news/codestral, 2026-09 (UNCERTAIN -- exact provider_model page not independently confirmed, assumed same lineage as codestral-2508)"
+ },
+ "llm7/codestral-latest": {
+  "context_window": 256000,
+  "context_source": "mistral.ai/news/codestral, 2026-09 (UNCERTAIN -- llm7 aggregator passthrough cap not independently verified)"
+ },
+ "groq/allam-2-7b": {
+  "context_window": 4096,
+  "context_source": "console.groq.com/docs/model/allam-2-7b, 2026-09 (confirmed, BELOW 64k floor)"
+ },
+ "mistral/voxtral-small-2507": {
+  "context_window": 32768,
+  "context_source": "docs.mistral.ai/models/model-cards/voxtral-small-25-07, 2026-09 (confirmed, BELOW 64k floor)",
+  "capabilities_note": "real capability is audio (speech) -- DB capabilities tag was wrong (text-only)"
+ },
+ "mistral/voxtral-small-latest": {
+  "context_window": 32768,
+  "context_source": "docs.mistral.ai/models/model-cards/voxtral-small-25-07, 2026-09 (confirmed, BELOW 64k floor, alias)",
+  "capabilities_note": "real capability is audio (speech) -- DB capabilities tag was wrong (text-only)"
+ },
+ "mistral/codestral-latest": {
+  "context_window": 256000,
+  "context_source": "mistral.ai/news/codestral, 2026-09 (confirmed; corrects stale 32000 entry in model_pricing.json to match codestral-2508)"
  }
 }

@@ -200,8 +200,10 @@ def test_chat_routes_by_demand_chain(monkeypatch):
     monkeypatch.setattr("app.main.get_demand_routes", lambda: {})
     # Neutral context windows: this test is about demand-chain ordering, not
     # context fit — a real catalog match for "llama-3.3-70b-versatile" would
-    # otherwise let the known-fit-first context policy jump it ahead.
-    monkeypatch.setattr("app.context_policy.context_window", lambda *a: None)
+    # otherwise let the known-fit-first context policy jump it ahead. Both
+    # must be *known* (not None) and clear the 64k virtual-route floor, or
+    # app.context_policy would exclude them outright rather than staying neutral.
+    monkeypatch.setattr("app.context_policy.context_window", lambda *a: 200_000)
     persisted = {}
     monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: persisted.update(kwargs))
 
@@ -230,7 +232,9 @@ def test_chat_demand_chain_falls_back(monkeypatch):
     monkeypatch.setattr("app.main.get_demand_routes", lambda: {"simple": ["local/qwen2.5:1.5b"]})
     monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.main.mark_runtime_failure_unhealthy", lambda *args, **kwargs: None)
-    monkeypatch.setattr("app.context_policy.context_window", lambda *a: None)
+    # Both known and well above the 64k virtual-route floor — neutral for
+    # this fallback-ordering test (see the comment on the sibling test above).
+    monkeypatch.setattr("app.context_policy.context_window", lambda *a: 200_000)
 
     calls = []
 
@@ -259,6 +263,9 @@ def test_chat_code_demand_falls_back_when_no_code_capable_model(monkeypatch):
     small = model("local/qwen2.5:1.5b", 4)
     monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([small, big]))
     monkeypatch.setattr("app.main.get_demand_routes", lambda: {})
+    # Known and above the 64k virtual-route floor — this test is about the
+    # code-capability downgrade/ranking, not context fit.
+    monkeypatch.setattr("app.context_policy.context_window", lambda *a: 200_000)
     persisted = {}
 
     def fake_persist(request_id, model_id, capability, *args, **kwargs):

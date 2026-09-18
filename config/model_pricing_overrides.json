@@ -2,7 +2,9 @@
  "nvidia/nvidia/nemotron-3-super-120b-a12b": {
   "input_cost_per_token": 8e-08,
   "output_cost_per_token": 4.5e-07,
-  "source": "openrouter.ai/nvidia/nemotron-3-super-120b-a12b, 2026-07"
+  "source": "openrouter.ai/nvidia/nemotron-3-super-120b-a12b, 2026-07",
+  "context_window": 1000000,
+  "context_source": "developer.nvidia.com/blog (nemotron-3-super), 2026-09 (confirmed; same model as Kilo/nvidia/nemotron-3-super-120b-a12b:free)"
  },
  "Kilo/nvidia/nemotron-3-super-120b-a12b:free": {
   "input_cost_per_token": 8e-08,
@@ -14,7 +16,9 @@
  "nvidia/nvidia/nemotron-3-ultra-550b-a55b": {
   "input_cost_per_token": 5e-07,
   "output_cost_per_token": 2.2e-06,
-  "source": "openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b, 2026-07"
+  "source": "openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b, 2026-07",
+  "context_window": 262144,
+  "context_source": "docs.nvidia.com/nim (nemotron-3-ultra), 2026-09 (confirmed; same model as Kilo/nvidia/nemotron-3-ultra-550b-a55b:free)"
  },
  "Kilo/nvidia/nemotron-3-ultra-550b-a55b:free": {
   "input_cost_per_token": 5e-07,
@@ -31,17 +35,23 @@
  "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": {
   "input_cost_per_token": 5e-07,
   "output_cost_per_token": 2.2e-06,
-  "source": "openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b (same model, free-tier alias), 2026-07"
+  "source": "openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b (same model, free-tier alias), 2026-07",
+  "context_window": 262144,
+  "context_source": "docs.nvidia.com/nim (nemotron-3-ultra), 2026-09 (confirmed; same model as Kilo/nvidia/nemotron-3-ultra-550b-a55b:free)"
  },
  "nvidia/nvidia/nemotron-3-nano-30b-a3b": {
   "input_cost_per_token": 5e-08,
   "output_cost_per_token": 2e-07,
-  "source": "openrouter.ai/nvidia/nemotron-3-nano-30b-a3b, 2026-07"
+  "source": "openrouter.ai/nvidia/nemotron-3-nano-30b-a3b, 2026-07",
+  "context_window": 262144,
+  "context_source": "huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 config.json max_position_embeddings, 2026-09 (confirmed; technical report separately claims 1M, but this is the served default)"
  },
  "openrouter/nvidia/nemotron-3-nano-30b-a3b:free": {
   "input_cost_per_token": 5e-08,
   "output_cost_per_token": 2e-07,
-  "source": "openrouter.ai/nvidia/nemotron-3-nano-30b-a3b (same model, free-tier alias), 2026-07"
+  "source": "openrouter.ai/nvidia/nemotron-3-nano-30b-a3b (same model, free-tier alias), 2026-07",
+  "context_window": 262144,
+  "context_source": "huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 config.json max_position_embeddings, 2026-09 (confirmed; same model as nvidia/nvidia/nemotron-3-nano-30b-a3b)"
  },
  "nvidia/z-ai/glm-5.2": {
   "input_cost_per_token": 1.4e-06,
@@ -51,17 +61,23 @@
  "cloudflare/openai/gpt-oss-120b": {
   "input_cost_per_token": 1.5e-07,
   "output_cost_per_token": 7.5e-07,
-  "source": "groq.com/pricing (openai/gpt-oss-120b), 2026-07"
+  "source": "groq.com/pricing (openai/gpt-oss-120b), 2026-07",
+  "context_window": 131072,
+  "context_source": "openrouter.ai/openai/gpt-oss-120b, 2026-09 (confirmed; same model as openrouter/openai/gpt-oss-120b)"
  },
  "nvidia/openai/gpt-oss-120b": {
   "input_cost_per_token": 1.5e-07,
   "output_cost_per_token": 7.5e-07,
-  "source": "groq.com/pricing (openai/gpt-oss-120b), 2026-07"
+  "source": "groq.com/pricing (openai/gpt-oss-120b), 2026-07",
+  "context_window": 131072,
+  "context_source": "openrouter.ai/openai/gpt-oss-120b, 2026-09 (confirmed; same model as openrouter/openai/gpt-oss-120b)"
  },
  "nvidia/openai/gpt-oss-20b": {
   "input_cost_per_token": 1e-07,
   "output_cost_per_token": 5e-07,
-  "source": "groq.com/pricing (openai/gpt-oss-20b), 2026-07"
+  "source": "groq.com/pricing (openai/gpt-oss-20b), 2026-07",
+  "context_window": 131072,
+  "context_source": "openrouter.ai/openai/gpt-oss-20b, 2026-09 (confirmed; same model as openrouter/openai/gpt-oss-20b)"
  },
  "nvidia/qwen/qwen3.5-397b-a17b": {
   "input_cost_per_token": 3.9e-07,
@@ -76,7 +92,9 @@
  "nvidia/meta/llama-3.1-8b-instruct": {
   "input_cost_per_token": 2e-08,
   "output_cost_per_token": 5e-08,
-  "source": "lowest widely-available hosted rate for Llama-3.1-8B-Instruct (DeepInfra/OpenRouter), 2026-07"
+  "source": "lowest widely-available hosted rate for Llama-3.1-8B-Instruct (DeepInfra/OpenRouter), 2026-07",
+  "context_window": 131072,
+  "context_source": "huggingface.co/meta-llama/Llama-3.1-8B-Instruct, 2026-09 (confirmed)"
  },
  "Github/meta/llama-4-maverick-17b-128e-instruct-fp8": {
   "input_cost_per_token": 1.5e-07,
@@ -225,5 +243,165 @@
  "openrouter/nvidia/nemotron-3.5-content-safety:free": {
   "context_window": 128000,
   "context_source": "huggingface.co/blog/nvidia/nemotron-3-5-content-safety, 2026-09 (confirmed -- NOTE: safety classifier, not a general chat/tool model; same model as Kilo/nvidia/nemotron-3.5-content-safety:free)"
+ },
+ "nvidia/nvidia/nemotron-3.5-content-safety": {
+  "context_window": 128000,
+  "context_source": "huggingface.co/blog/nvidia/nemotron-3-5-content-safety, 2026-09 (confirmed -- NOTE: this is a safety classifier, not a general chat/tool model; same model as Kilo/nvidia/nemotron-3.5-content-safety:free)"
+ },
+ "nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning": {
+  "context_window": 256000,
+  "context_source": "developer.nvidia.com/blog (nemotron-3-nano-omni), 2026-09 (confirmed; same model as Kilo/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free)"
+ },
+ "nvidia/nvidia/nemotron-3.5-lightning-30b-a3b": {
+  "context_window": 262144,
+  "context_source": "docs.nvidia.com/nim (nemotron-3.5-lightning), 2026-09 (confirmed; same model as Kilo/nvidia/nemotron-3.5-lightning:free)"
+ },
+ "nvidia/nvidia/llama-3.3-nemotron-super-49b-v1": {
+  "context_window": 131072,
+  "context_source": "docs.api.nvidia.com/nim/reference/nvidia-llama-3_3-nemotron-super-49b-v1, huggingface.co/nvidia/Llama-3.3-Nemotron-Super-49B-v1, 2026-09 (confirmed)"
+ },
+ "nvidia/nvidia/llama-3.3-nemotron-super-49b-v1.5": {
+  "context_window": 131072,
+  "context_source": "docs.api.nvidia.com/nim/reference/nvidia-llama-3_3-nemotron-super-49b-v1_5, huggingface.co/nvidia/Llama-3_3-Nemotron-Super-49B-v1_5, 2026-09 (confirmed)"
+ },
+ "openrouter/nvidia/nemotron-3-super-120b-a12b:free": {
+  "context_window": 1000000,
+  "context_source": "developer.nvidia.com/blog (nemotron-3-super), 2026-09 (confirmed; same model as Kilo/nvidia/nemotron-3-super-120b-a12b:free)"
+ },
+ "openrouter/poolside/laguna-s-2.1:free": {
+  "context_window": 1048576,
+  "context_source": "poolside.ai/blog/introducing-laguna-s-2-1, 2026-09 (confirmed; same model as Kilo/poolside/laguna-s-2.1:free)"
+ },
+ "nvidia/nvidia/llama-3.1-nemotron-nano-8b-v1": {
+  "context_window": 131072,
+  "context_source": "docs.api.nvidia.com/nim/reference/nvidia-llama-3_1-nemotron-nano-8b-v1, huggingface.co/nvidia/Llama-3.1-Nemotron-Nano-8B-v1, 2026-09 (confirmed)"
+ },
+ "nvidia/nvidia/llama-3.1-nemotron-nano-vl-8b-v1": {
+  "context_window": 131072,
+  "context_source": "huggingface.co/nvidia/Llama-3.1-Nemotron-Nano-VL-8B-V1, docs.api.nvidia.com/nim/reference/nvidia-llama-3_1-nemotron-nano-vl-8b-v1, 2026-09 (confirmed)"
+ },
+ "nvidia/nvidia/llama-3.1-nemoguard-8b-content-safety": {
+  "context_window": 131072,
+  "context_source": "docs.nvidia.com/nim/llama-3-1-nemoguard-8b-contentsafety (release notes, v1.10.1), 2026-09 (confirmed -- upgraded from 8K; NOTE: this is a safety classifier, not a general chat/tool model)"
+ },
+ "nvidia/nvidia/llama-3.1-nemoguard-8b-topic-control": {
+  "context_window": 131072,
+  "context_source": "docs.nvidia.com/nim/llama-3-1-nemoguard-8b-topiccontrol (release notes, v1.10.1), 2026-09 (confirmed -- upgraded from 8K; NOTE: this is a safety classifier, not a general chat/tool model)"
+ },
+ "nvidia/nvidia/llama-3.1-nemotron-safety-guard-8b-v3": {
+  "context_window": 131072,
+  "context_source": "models.dev/models/nvidia/llama-3.1-nemotron-safety-guard-8b-v3, 2026-09 (UNCERTAIN -- an older NemoGuard page separately cites 8K, but this v3 lineage's contentsafety/topic-control siblings were confirmed upgraded to 128K; NOTE: safety classifier)"
+ },
+ "nvidia/nvidia/nemotron-mini-4b-instruct": {
+  "context_window": 4096,
+  "context_source": "huggingface.co/nvidia/Nemotron-Mini-4B-Instruct, 2026-09 (confirmed, BELOW 64k floor)"
+ },
+ "nvidia/nvidia/ising-calibration-1.5-31b": {
+  "context_window": 131072,
+  "context_source": "build.nvidia.com/nvidia/ising-calibration-1.5-31b, huggingface.co/nvidia/Ising-Calibration-1.5-31B-BF16, 2026-09 (confirmed)"
+ },
+ "nvidia/deepseek-ai/deepseek-v4-flash-0731": {
+  "context_window": 1310720,
+  "context_source": "openrouter.ai/deepseek/deepseek-v4-flash-0731, artificialanalysis.ai/models/deepseek-v4-flash, 2026-09 (confirmed; 0731 revision specifically -- distinct from the 0423 revision's 1048576)"
+ },
+ "nvidia/meta/muse-glimmer-30b": {
+  "context_window": 131072,
+  "context_source": "build.nvidia.com/meta/muse-glimmer-30b, benchlm.ai/models/muse-glimmer-30b, 2026-09 (confirmed)"
+ },
+ "nvidia/nvidia/riva-translate-4b-instruct-v2": {
+  "context_window": 8000,
+  "context_source": "huggingface.co/nvidia/Riva-Translate-4B-Instruct-v2, 2026-09 (confirmed, BELOW 64k floor)"
+ },
+ "nvidia/nvidia/riva-translate-4b-instruct-v1.1": {
+  "context_window": 8000,
+  "context_source": "huggingface.co/nvidia/Riva-Translate-4B-Instruct-v1.1, 2026-09 (confirmed, BELOW 64k floor; same lineage as v2)"
+ },
+ "nvidia/poolside/laguna-xs-2.1": {
+  "context_window": 262144,
+  "context_source": "openrouter.ai/poolside/laguna-xs-2.1:free, aimadetools.com/blog/poolside-laguna-xs-2-1-complete-guide, 2026-09 (confirmed)"
+ },
+ "nvidia/thinkingmachines/inkling": {
+  "context_window": 1048576,
+  "context_source": "thinkingmachines.ai/model-card/inkling, datacamp.com/blog/thinking-machines-inkling, 2026-09 (confirmed native max; the Tinker fine-tuning platform separately offers reduced 64K/256K serving options)"
+ },
+ "nvidia/mistralai/mistral-nemotron": {
+  "context_window": 128000,
+  "context_source": "mistral.ai/news/mistral-nemo, build.nvidia.com/mistralai/mistral-nemotron, 2026-09 (confirmed)"
+ },
+ "nvidia/moonshotai/kimi-k3": {
+  "context_window": 1048576,
+  "context_source": "openrouter.ai/moonshotai/kimi-k3, morphllm.com/kimi-k3, 2026-09 (confirmed)"
+ },
+ "nvidia/nvidia/nemotron-nano-12b-v2-vl": {
+  "context_window": 131072,
+  "context_source": "artificialanalysis.ai/models/nvidia-nemotron-nano-12b-v2-vl, 2026-09 (confirmed; trained on sequences up to 311K but usable inference context is 128K)"
+ },
+ "nvidia/nvidia/nvidia-nemotron-nano-9b-v2": {
+  "context_window": 131072,
+  "context_source": "developer.nvidia.com/downloads/assets/ace/model_card/nemotron-nano-9b-v2.pdf, 2026-09 (confirmed)"
+ },
+ "nvidia/minimaxai/minimax-m3": {
+  "context_window": 1048576,
+  "context_source": "minimax.io/models/text/m3, openrouter.ai/minimax/minimax-m3, 2026-09 (confirmed; guaranteed minimum 512K, up to 1M)"
+ },
+ "cohere/north-small-translate-09-2026": {
+  "context_window": 16000,
+  "context_source": "docs.cohere.com/docs/north-small-translate-1.0, 2026-09 (confirmed, BELOW 64k floor)"
+ },
+ "nvidia/meta/llama-3.1-70b-instruct": {
+  "context_window": 131072,
+  "context_source": "ai.meta.com (Llama 3.1 model card), 2026-09 (confirmed, well-documented industry-wide)"
+ },
+ "nvidia/meta/llama-3.2-90b-vision-instruct": {
+  "context_window": 131072,
+  "context_source": "ai.meta.com (Llama 3.2 model card), 2026-09 (confirmed, well-documented industry-wide)"
+ },
+ "nvidia/meta/llama-3.2-3b-instruct": {
+  "context_window": 131072,
+  "context_source": "ai.meta.com (Llama 3.2 model card), 2026-09 (confirmed, well-documented industry-wide)"
+ },
+ "nvidia/meta/llama-3.2-11b-vision-instruct": {
+  "context_window": 131072,
+  "context_source": "ai.meta.com (Llama 3.2 model card), 2026-09 (confirmed, well-documented industry-wide)"
+ },
+ "nvidia/stepfun-ai/step-3.7-flash": {
+  "context_window": 262144,
+  "context_source": "huggingface.co/stepfun-ai/Step-3.7-Flash, 2026-09 (confirmed; same model as Kilo/stepfun/step-3.7-flash:free)"
+ },
+ "Kilo/inclusionai/ling-3.0-flash-vl:free": {
+  "context_window": 262144,
+  "context_source": "huggingface.co/inclusionAI/Ling-3.0-flash-VL, developer.puter.com/ai/inclusionai/ling-3.0-flash-vl, 2026-09 (confirmed -- more precise than the base-family estimate used for the fin/sante siblings)"
+ },
+ "openrouter/inclusionai/ling-3.0-flash-vl:free": {
+  "context_window": 262144,
+  "context_source": "huggingface.co/inclusionAI/Ling-3.0-flash-VL, developer.puter.com/ai/inclusionai/ling-3.0-flash-vl, 2026-09 (confirmed; same model as Kilo/inclusionai/ling-3.0-flash-vl:free)"
+ },
+ "Kilo/nex-agi/nex-n2.5-mini:free": {
+  "context_window": 262144,
+  "context_source": "huggingface.co/nex-agi/Nex-N2.5-mini, mindstudio.ai/blog/nex-n2-5-agentic-model-family, 2026-09 (confirmed)"
+ },
+ "openrouter/nex-agi/nex-n2.5-mini:free": {
+  "context_window": 262144,
+  "context_source": "huggingface.co/nex-agi/Nex-N2.5-mini, mindstudio.ai/blog/nex-n2-5-agentic-model-family, 2026-09 (confirmed; same model as Kilo/nex-agi/nex-n2.5-mini:free)"
+ },
+ "Kilo/nex-agi/nex-n2.5-pro:free": {
+  "context_window": 262144,
+  "context_source": "huggingface.co/nex-agi/Nex-N2.5-Pro, mindstudio.ai/blog/nex-n2-5-agentic-model-family, 2026-09 (confirmed)"
+ },
+ "openrouter/nex-agi/nex-n2.5-pro:free": {
+  "context_window": 262144,
+  "context_source": "huggingface.co/nex-agi/Nex-N2.5-Pro, mindstudio.ai/blog/nex-n2-5-agentic-model-family, 2026-09 (confirmed; same model as Kilo/nex-agi/nex-n2.5-pro:free)"
+ },
+ "Kilo/stealth/union-alpha": {
+  "context_window": 262144,
+  "context_source": "x.com/OpenRouter/status/2100235351575191751 (official stealth-model announcement), openrouter.ai/stealth/union-alpha, 2026-09 (confirmed)"
+ },
+ "openrouter/stealth/union-alpha": {
+  "context_window": 262144,
+  "context_source": "x.com/OpenRouter/status/2100235351575191751 (official stealth-model announcement), openrouter.ai/stealth/union-alpha, 2026-09 (confirmed; same model)"
+ },
+ "Kilo/z-ai/glm-5.2:free": {
+  "context_window": 1048576,
+  "context_source": "mindstudio.ai/blog/what-is-glm-5-2-open-weight-model-1m-context, eigent.ai/blog/glm-5-2, 2026-09 (confirmed)"
  }
 }

@@ -1,9 +1,18 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.registry import ProviderModel, ProviderRegistry
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _known_roomy_context_window(monkeypatch):
+    # This file is about compaction, not context fit — give the synthetic
+    # model a known window safely above the 64k virtual-route floor (the
+    # default "auto" model would otherwise hard-exclude its uncatalogued window).
+    monkeypatch.setattr("app.context_policy.context_window", lambda *a: 200_000)
 
 
 def _model():

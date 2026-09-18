@@ -1,3 +1,5 @@
+import json
+
 import app.pricing as pricing_module
 from app.pricing import context_window, reference_cost
 from app.registry import ProviderModel, ProviderRegistry
@@ -134,3 +136,71 @@ def test_live_tier_takes_priority_over_curated_override(monkeypatch, tmp_path):
 
     cost = reference_cost("nvidia/z-ai/glm-5.2", "z-ai/glm-5.2", 1000, 500)
     assert cost == round(1000 * 0.000002 + 500 * 0.000006, 8)  # live number, not the 1.4e-6/4.4e-6 override
+
+
+def test_sync_provider_pricing_also_captures_context_length_without_pricing(monkeypatch, tmp_path):
+    # An aggregator /models response can carry context_length on a model that
+    # has no pricing object at all (or an unparseable one) — that context data
+    # is real and already being fetched; it must not be discarded just because
+    # the pricing half of the same entry didn't parse.
+    monkeypatch.setattr(pricing_module, "_LIVE_PATH", tmp_path / "model_pricing_live.json")
+    monkeypatch.setattr(pricing_module, "_live", None)
+    monkeypatch.setattr(pricing_module, "_live_failed", False)
+
+    class FakeResponse:
+        def json(self):
+            return {"data": [{"id": "no-pricing-but-context", "context_length": 200_000}]}
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", lambda *args, **kwargs: FakeResponse())
+
+    registry = ProviderRegistry(
+        [ProviderModel("agg/no-pricing-but-context", "agg", "no-pricing-but-context", 1, ["text"], True, True, "https://agg.example/v1", "")]
+    )
+    count = pricing_module.sync_provider_pricing(registry)
+
+    assert count == 1
+    assert context_window("agg/no-pricing-but-context", "no-pricing-but-context") == 200_000
+    # No cost fields on this entry — reference_cost treats a missing
+    # input/output rate as 0, same as any other context-only catalog entry
+    # (e.g. the safety-classifier overrides that only carry context_window).
+    assert reference_cost("agg/no-pricing-but-context", "no-pricing-but-context", 100, 50) == 0.0
+
+
+def test_context_window_falls_through_to_discovered_tier_as_last_resort(monkeypatch):
+    monkeypatch.setattr(pricing_module, "_live", {})
+    monkeypatch.setattr(pricing_module, "_overrides", {})
+    monkeypatch.setattr(pricing_module, "_catalog", {})
+    monkeypatch.setattr(pricing_module, "_discovered", {"nvidia/nvidia/some-model": {"context_window": 128_000}})
+
+    assert context_window("nvidia/nvidia/some-model", "nvidia/some-model") == 128_000
+
+
+def test_context_window_prefers_catalog_over_discovered(monkeypatch):
+    # A documented window always wins over a probed lower bound, even if the
+    # probe happened to find a bigger number — the catalog entry is real,
+    # confirmed data; the probe is just a confirmed floor.
+    monkeypatch.setattr(pricing_module, "_live", {})
+    monkeypatch.setattr(pricing_module, "_overrides", {})
+    monkeypatch.setattr(pricing_module, "_catalog", {"model": {"context_window": 131_072}})
+    monkeypatch.setattr(pricing_module, "_discovered", {"agg/model": {"context_window": 256_000}})
+
+    assert context_window("agg/model", "model") == 131_072
+
+
+def test_record_discovered_context_window_persists_and_updates_cache(monkeypatch, tmp_path):
+    discovered_path = tmp_path / "model_context_discovered.json"
+    monkeypatch.setattr(pricing_module, "_DISCOVERED_PATH", discovered_path)
+    monkeypatch.setattr(pricing_module, "_discovered", None)
+    monkeypatch.setattr(pricing_module, "_discovered_failed", False)
+    monkeypatch.setattr(pricing_module, "_live", {})
+    monkeypatch.setattr(pricing_module, "_overrides", {})
+    monkeypatch.setattr(pricing_module, "_catalog", {})
+
+    pricing_module.record_discovered_context_window("nvidia/nvidia/some-model", 128_000, "confirmed lower bound")
+
+    assert context_window("nvidia/nvidia/some-model", "nvidia/some-model") == 128_000
+    saved = json.loads(discovered_path.read_text())
+    assert saved["nvidia/nvidia/some-model"]["context_window"] == 128_000
+    assert "confirmed lower bound" in saved["nvidia/nvidia/some-model"]["source"]

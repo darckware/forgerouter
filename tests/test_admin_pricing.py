@@ -76,3 +76,82 @@ def test_admin_pricing_sync_reports_502_on_fetch_failure(monkeypatch):
 
     assert response.status_code == 502
     assert response.json()["error"]["type"] == "pricing_sync_failed"
+
+
+def test_admin_discover_context_requires_admin(monkeypatch):
+    monkeypatch.setattr("app.main.has_any_agent", lambda: True)
+    monkeypatch.setattr("app.main.find_agent_by_key", lambda key: None)
+
+    response = client.post("/admin/pricing/discover-context")
+
+    assert response.status_code == 401
+
+
+def test_admin_discover_context_skips_already_catalogued_models(monkeypatch):
+    from app.validation.context_probe import ContextProbeResult
+
+    monkeypatch.setattr("app.main.has_any_agent", lambda: True)
+    monkeypatch.setattr("app.main.find_agent_by_key", lambda key: "tester" if key == "secret" else None)
+    registry = ProviderRegistry([
+        _model("groq/llama-3.3-70b-versatile", "llama-3.3-70b-versatile"),  # already catalogued
+        _model("local/totally-made-up-model", "totally-made-up-model"),  # unknown — must be probed
+    ])
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: registry)
+    probed = []
+
+    def fake_probe(model, timeout=60.0):
+        probed.append(model.id)
+        return ContextProbeResult(model.id, 128_000, [(64_000, "fit")], "confirmed lower bound")
+
+    monkeypatch.setattr("app.validation.context_probe.probe_context_window", fake_probe)
+    persisted = {}
+    monkeypatch.setattr("app.pricing.record_discovered_context_window", lambda public_id, window, note="": persisted.update({public_id: window}))
+
+    response = client.post("/admin/pricing/discover-context", headers={"Authorization": "Bearer secret"})
+
+    assert response.status_code == 200
+    assert probed == ["local/totally-made-up-model"]
+    assert persisted == {"local/totally-made-up-model": 128_000}
+    assert response.json()["probed"] == 1
+
+
+def test_admin_discover_context_does_not_persist_inconclusive_results(monkeypatch):
+    from app.validation.context_probe import ContextProbeResult
+
+    monkeypatch.setattr("app.main.has_any_agent", lambda: True)
+    monkeypatch.setattr("app.main.find_agent_by_key", lambda key: "tester" if key == "secret" else None)
+    registry = ProviderRegistry([_model("local/totally-made-up-model", "totally-made-up-model")])
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: registry)
+    monkeypatch.setattr(
+        "app.validation.context_probe.probe_context_window",
+        lambda model, timeout=60.0: ContextProbeResult(model.id, None, [], "floor checkpoint inconclusive: inconclusive:rate_limited"),
+    )
+    persist_calls = []
+    monkeypatch.setattr("app.pricing.record_discovered_context_window", lambda *a, **k: persist_calls.append((a, k)))
+
+    response = client.post("/admin/pricing/discover-context", headers={"Authorization": "Bearer secret"})
+
+    assert response.status_code == 200
+    assert persist_calls == []
+    assert response.json()["results"][0]["context_window"] is None
+
+
+def test_admin_discover_context_respects_limit(monkeypatch):
+    from app.validation.context_probe import ContextProbeResult
+
+    monkeypatch.setattr("app.main.has_any_agent", lambda: True)
+    monkeypatch.setattr("app.main.find_agent_by_key", lambda key: "tester" if key == "secret" else None)
+    registry = ProviderRegistry([
+        _model(f"local/unknown-{i}", f"unknown-{i}") for i in range(5)
+    ])
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: registry)
+    monkeypatch.setattr(
+        "app.validation.context_probe.probe_context_window",
+        lambda model, timeout=60.0: ContextProbeResult(model.id, 128_000, [], "confirmed lower bound"),
+    )
+    monkeypatch.setattr("app.pricing.record_discovered_context_window", lambda *a, **k: None)
+
+    response = client.post("/admin/pricing/discover-context?limit=2", headers={"Authorization": "Bearer secret"})
+
+    assert response.status_code == 200
+    assert response.json()["probed"] == 2

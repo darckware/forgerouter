@@ -13,6 +13,9 @@ def setup_routing(monkeypatch):
     monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.main.get_demand_routes", lambda: {})
     monkeypatch.setattr("app.main.agent_allowed_models", lambda name: None)
+    # Known and above the 64k virtual-route floor — this file is about agent
+    # key auth, not context fit.
+    monkeypatch.setattr("app.context_policy.context_window", lambda *a: 200_000)
 
 
 def test_v1_rejects_missing_key_once_agents_exist(monkeypatch):

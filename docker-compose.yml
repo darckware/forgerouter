@@ -44,6 +44,11 @@ services:
       - ./config/model_pricing.json:/app/config/model_pricing.json
       - ./config/model_pricing_live.json:/app/config/model_pricing_live.json
       - ./config/model_pricing_overrides.json:/app/config/model_pricing_overrides.json
+      # Actively-discovered context windows (read-write): POST /admin/pricing/
+      # discover-context and scripts/discover_context_windows.py write here
+      # (app/validation/context_probe.py) — same persist-across-deploys reasoning
+      # as the pricing catalogs above.
+      - ./config/model_context_discovered.json:/app/config/model_context_discovered.json
       # --- Agent deploy-config (read-write): lets POST /admin/agents/{name}/rotate-key
       # write the freshly rotated key straight into the agent's own runtime config
       # (db/036_agent_deploy_config.sql: agents.config_path/config_format/config_key),

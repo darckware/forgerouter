@@ -39,7 +39,16 @@ def partition_candidates(
     incoming order. Known-fit candidates come first, then unknown-fit ones
     (a documented window is trusted over a guess). When prompt_tokens is
     unknown (tokenizer unavailable), nothing is filtered — a counting
-    failure must never turn into an outage."""
+    failure must never turn into an outage.
+
+    For a virtual route, an *uncatalogued* window is not a free pass: unlike
+    a concrete-model request (which may still land on a catalog-unknown
+    model, since the caller named it on purpose), a virtual route can land
+    on any candidate — so the floor can only be honored for candidates
+    ForgeRouter actually knows clear it. A missing catalog entry must never
+    be read as "assume it's fine"; that let real sub-floor models (NVIDIA's
+    catalog is mostly uncatalogued here) through forgerouter/auto with no
+    check at all."""
     if prompt_tokens is None:
         return ContextPartition(list(candidates), [], None)
     known_fit: list[ProviderModel] = []
@@ -49,7 +58,7 @@ def partition_candidates(
     for candidate in candidates:
         window = context_window(candidate.id, candidate.provider_model)
         budget, known = model_context_budget(candidate, trigger_percent, unknown_budget)
-        if virtual_route and known and window < MINIMUM_VIRTUAL_CONTEXT:
+        if virtual_route and (not known or window < MINIMUM_VIRTUAL_CONTEXT):
             # Never viable regardless of truncation — its budget must not
             # inflate max_input_budget, or a truncation target sized off a
             # candidate that can never be selected could under-trim the

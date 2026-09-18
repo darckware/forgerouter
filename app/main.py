@@ -1179,7 +1179,11 @@ def _prepare_context_payload(
     partition = partition_candidates(candidates, tokens, trigger_percent, unknown_budget, virtual_route)
     if partition.fitting:
         return ContextPayload(messages, partition.fitting, tokens, 0, "none", len(partition.excluded), partition.max_input_budget)
-    if not truncation_on:
+    if not truncation_on or partition.max_input_budget is None:
+        # No budget to truncate toward: either truncation is off, or nothing in the
+        # candidate pool ever contributed a budget (e.g. a virtual route whose whole
+        # pool is catalog-unknown or known-sub-floor) — there's no target that could
+        # ever make a candidate viable.
         return ContextPayload(messages, [], tokens, 0, "rejected", len(partition.excluded), partition.max_input_budget)
     target_budget = partition.max_input_budget
     trimmed, dropped, dropped_messages, fits = truncate_messages(messages, target_budget, tools, total_tokens=tokens)
@@ -3117,6 +3121,44 @@ def admin_pricing_sync(request: Request):
         "backfill_priced": priced,
         "last_synced": last_synced,
     }
+
+
+@app.post("/admin/pricing/discover-context")
+def admin_discover_context(request: Request, limit: int = 10):
+    # State-changing and quota-costing (each candidate model gets 1-5 real
+    # requests) — admin-gated, and deliberately never run automatically from
+    # rescan/resync. `limit` caps how many models get probed in one call so a
+    # single request can't burn through a huge batch unattended.
+    auth_error = require_admin(request)
+    if auth_error:
+        return auth_error
+    from app.pricing import context_window, record_discovered_context_window
+    from app.validation.context_probe import probe_context_window
+
+    registry = load_registry_with_db_health()
+    candidates = [
+        model for model in registry.models
+        if model.enabled and context_window(model.id, model.provider_model) is None
+    ][:max(0, limit)]
+    results = []
+    for model in candidates:
+        try:
+            result = probe_context_window(model)
+        except Exception as exc:
+            results.append({"model_id": model.id, "context_window": None, "note": type(exc).__name__})
+            continue
+        if result.context_window is not None:
+            try:
+                record_discovered_context_window(model.id, result.context_window, result.note)
+            except Exception:
+                pass
+        results.append({
+            "model_id": model.id,
+            "context_window": result.context_window,
+            "checkpoints": [{"tokens": tokens, "outcome": outcome} for tokens, outcome in result.checkpoints],
+            "note": result.note,
+        })
+    return {"probed": len(results), "results": results}
 
 
 @app.get("/admin/providers/health")

@@ -1,9 +1,19 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.registry import ProviderModel, ProviderRegistry
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _known_roomy_context_window(monkeypatch):
+    # This whole file is about fallback/retry mechanics on synthetic,
+    # catalog-unknown model ids — not context fit. Since a virtual route
+    # (the default "auto" model) now hard-excludes an uncatalogued window,
+    # give every model here a known window safely above the 64k floor.
+    monkeypatch.setattr("app.context_policy.context_window", lambda *a: 200_000)
 
 
 def test_chat_falls_back_to_next_candidate(monkeypatch):

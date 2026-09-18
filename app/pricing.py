@@ -44,6 +44,7 @@ _CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 _LIVE_PATH = _CONFIG_DIR / "model_pricing_live.json"
 _OVERRIDES_PATH = _CONFIG_DIR / "model_pricing_overrides.json"
 _CATALOG_PATH = _CONFIG_DIR / "model_pricing.json"
+_DISCOVERED_PATH = _CONFIG_DIR / "model_context_discovered.json"
 
 LITELLM_SOURCE_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 _KEPT_MODES = ("chat", "completion")
@@ -54,6 +55,8 @@ _overrides: dict[str, Any] | None = None
 _overrides_failed = False
 _catalog: dict[str, Any] | None = None
 _catalog_failed = False
+_discovered: dict[str, Any] | None = None
+_discovered_failed = False
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -94,6 +97,37 @@ def _get_catalog() -> dict[str, Any]:
     return _catalog or {}
 
 
+def _get_discovered() -> dict[str, Any]:
+    global _discovered, _discovered_failed
+    if _discovered is None and not _discovered_failed:
+        try:
+            _discovered = _load_json(_DISCOVERED_PATH)
+        except Exception:
+            _discovered_failed = True
+            _discovered = {}
+    return _discovered or {}
+
+
+def record_discovered_context_window(public_id: str, window: int, note: str = "") -> None:
+    """Persist a context window app.validation.context_probe actually
+    confirmed by testing the live model — the lowest-priority tier in
+    context_window() below, since it's a confirmed lower bound from an
+    active probe rather than something the provider documents. Never call
+    this with a guessed/inferred value; only a probe result."""
+    global _discovered, _discovered_failed
+    discovered = dict(_get_discovered())
+    discovered[public_id] = {
+        "context_window": int(window),
+        "source": f"forgerouter context probe, {datetime.now(timezone.utc).date().isoformat()}"
+        + (f" ({note})" if note else ""),
+    }
+    with open(_DISCOVERED_PATH, "w", encoding="utf-8") as fh:
+        json.dump(discovered, fh, indent=1, sort_keys=True)
+        fh.write("\n")
+    _discovered = discovered
+    _discovered_failed = False
+
+
 def _lookup(public_id: str, provider_model: str) -> dict[str, Any] | None:
     live = _get_live()
     if public_id in live:
@@ -118,6 +152,12 @@ def context_window(public_id: str, provider_model: str) -> int | None:
     Resolve this field independently across the pricing tiers. A higher-tier
     entry may contain authoritative pricing without context metadata; that
     must not hide a context window available from a lower tier.
+
+    The `discovered` tier (config/model_context_discovered.json, written by
+    app.validation.context_probe) is checked last, below the vendored
+    catalog — it's a confirmed lower bound from actively testing the live
+    model, not something the provider documents, so a documented number
+    always wins when one exists.
     """
     public_id = public_id or ""
     provider_model = provider_model or ""
@@ -126,6 +166,7 @@ def context_window(public_id: str, provider_model: str) -> int | None:
         _get_live().get(public_id),
         _get_overrides().get(public_id),
         *(catalog.get(key) for key in (public_id, provider_model, provider_model.rsplit("/", 1)[-1])),
+        _get_discovered().get(public_id),
     ]
     for entry in entries:
         window = entry.get("context_window") if isinstance(entry, dict) else None
@@ -226,19 +267,26 @@ def _fetch_provider_pricing(
     for item in items:
         if not isinstance(item, dict) or not item.get("id"):
             continue
+        entry: dict[str, Any] = {}
         pricing = item.get("pricing")
-        if not isinstance(pricing, dict):
-            continue
-        input_cost = _parse_aggregator_price(pricing.get("prompt"))
-        output_cost = _parse_aggregator_price(pricing.get("completion"))
-        if input_cost is None or output_cost is None:
-            continue
-        public_id = f"{provider_name}/{item['id']}"
-        result[public_id] = {
-            "input_cost_per_token": input_cost,
-            "output_cost_per_token": output_cost,
-            "source": f"{provider_name} /models pricing (live), synced {synced_at}",
-        }
+        if isinstance(pricing, dict):
+            input_cost = _parse_aggregator_price(pricing.get("prompt"))
+            output_cost = _parse_aggregator_price(pricing.get("completion"))
+            if input_cost is not None and output_cost is not None:
+                entry["input_cost_per_token"] = input_cost
+                entry["output_cost_per_token"] = output_cost
+                entry["source"] = f"{provider_name} /models pricing (live), synced {synced_at}"
+        # Aggregators (OpenRouter, Kilo) also publish context_length in the same
+        # /models response — real, documented data already being fetched here for
+        # pricing, so capture it too instead of discarding it. This is the same
+        # literal endpoint being routed through, the highest-priority tier in
+        # app.pricing.context_window().
+        context_length = item.get("context_length")
+        if isinstance(context_length, (int, float)) and context_length > 0:
+            entry["context_window"] = int(context_length)
+        if entry:
+            public_id = f"{provider_name}/{item['id']}"
+            result[public_id] = entry
     return result
 
 

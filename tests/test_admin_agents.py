@@ -217,6 +217,9 @@ def test_chat_respects_agent_model_controls(monkeypatch):
     monkeypatch.setattr("app.main.find_agent_by_key", lambda key: "athos")
     monkeypatch.setattr("app.main.agent_allowed_models", lambda name: {"p2/model-b"})
     monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
+    # Known and above the 64k virtual-route floor — this test is about agent
+    # model-control scoping, not context fit.
+    monkeypatch.setattr("app.context_policy.context_window", lambda *a: 200_000)
 
     calls = []
 
@@ -241,6 +244,9 @@ def test_chat_attributes_agent_from_bearer_key(monkeypatch):
     monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([model]))
     monkeypatch.setattr("app.main.chat_completion", lambda model, payload: (200, {"choices": [{"message": {"content": "OK"}}]}))
     monkeypatch.setattr("app.main.find_agent_by_key", lambda key: "athos" if key == "hermes_k" else None)
+    # Known and above the 64k virtual-route floor — this test is about agent
+    # attribution, not context fit.
+    monkeypatch.setattr("app.context_policy.context_window", lambda *a: 200_000)
 
     recorded = {}
 

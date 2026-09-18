@@ -15,6 +15,9 @@ def _mock_success_chat(monkeypatch):
     monkeypatch.setattr("app.main.chat_completion", lambda model, payload: (200, {"choices": [{"message": {"content": "OK"}}]}))
     monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.main.find_agent_by_key", lambda key: "athos" if key == "hermes_k" else None)
+    # Known and above the 64k virtual-route floor — these tests are about the
+    # budget guard, not context fit.
+    monkeypatch.setattr("app.context_policy.context_window", lambda *a: 200_000)
 
 
 def test_no_budget_configured_routes_normally(monkeypatch):

@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app import routing_state
@@ -8,6 +9,15 @@ from app.ranking import dynamic_score
 from app.registry import ProviderModel, ProviderRegistry
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _known_roomy_context_window(monkeypatch):
+    # This file is about routing-state mechanics (breakers/sticky/rate
+    # ledger), not context fit — give every synthetic model here a known
+    # window safely above the 64k virtual-route floor (the default "auto"
+    # model would otherwise hard-exclude its uncatalogued window).
+    monkeypatch.setattr("app.context_policy.context_window", lambda *a: 200_000)
 
 
 def model(public_id: str, tier: int, caps: list[str] | None = None) -> ProviderModel:

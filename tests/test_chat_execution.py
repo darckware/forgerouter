@@ -13,6 +13,9 @@ def test_chat_payload_omits_null_message_fields(monkeypatch):
     model = ProviderModel("p1/m", "p1", "m", 1, ["text"], True, True, "http://x/v1", "")
     monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([model]))
     monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
+    # Known and above the 64k virtual-route floor — this test is about the
+    # outgoing payload shape, not context fit.
+    monkeypatch.setattr("app.context_policy.context_window", lambda *a: 200_000)
     captured = {}
 
     def fake_chat_completion(selected, payload):

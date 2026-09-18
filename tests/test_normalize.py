@@ -79,6 +79,62 @@ def test_count_tokens_reflects_compaction_savings():
     assert compact_tokens < raw_tokens
 
 
+def test_count_tokens_never_tokenizes_a_base64_image_payload():
+    # Regression: an embedded image was previously counted as literal text —
+    # tiktoken's BPE tokenizes base64 far denser than prose, so a few-hundred-KB
+    # screenshot turned into hundreds of thousands of "tokens" (measured live:
+    # vision route_events averaging 94k-350k tokens for an ordinary chat message
+    # plus one image, some wrongly 413-rejected). A huge base64 payload must add
+    # only the flat per-image estimate, not scale with its size.
+    huge_base64 = "A" * 500_000  # ~half a million chars of "image data"
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "what is in this image?"},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{huge_base64}"}},
+        ],
+    }]
+
+    tokens = count_tokens(messages)
+
+    if tokens is None:
+        return  # tiktoken encoding unavailable in this environment — degrade gracefully
+    assert tokens < 2_000  # the flat image estimate plus a few words of text, nowhere near 500k chars' worth
+
+
+def test_count_tokens_adds_flat_estimate_per_image_and_audio_part():
+    text_only = count_tokens([{"role": "user", "content": [{"type": "text", "text": "hi"}]}])
+    with_image = count_tokens([{"role": "user", "content": [
+        {"type": "text", "text": "hi"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/small.png"}},
+    ]}])
+    with_audio = count_tokens([{"role": "user", "content": [
+        {"type": "text", "text": "hi"},
+        {"type": "input_audio", "input_audio": {"data": "YWJj", "format": "wav"}},
+    ]}])
+
+    if text_only is None or with_image is None or with_audio is None:
+        return  # tiktoken encoding unavailable in this environment — degrade gracefully
+    # A flat per-item estimate is added regardless of whether the image is a
+    # short external URL or embedded base64 — the real vision/audio token
+    # cost is about the item, not proportional to how it's referenced. A
+    # small amount on top of the flat estimate is the placeholder's own
+    # (short, fixed) JSON encoding — not the exact number, since it isn't
+    # what's being verified here.
+    assert 1_500 <= with_image - text_only < 1_600
+    assert 300 <= with_audio - text_only < 400
+
+
+def test_count_tokens_leaves_plain_string_content_unaffected():
+    # No multimodal parts to strip — plain string content must take the
+    # unchanged pass-through path, not the list-stripping one.
+    tokens = count_tokens([{"role": "user", "content": "hello"}])
+
+    if tokens is None:
+        return  # tiktoken encoding unavailable in this environment — degrade gracefully
+    assert tokens > 0
+
+
 def _big(label: str) -> str:
     # ~2k tokens of filler per message — big enough that a handful of turns
     # reliably crosses a small test budget without depending on exact tiktoken counts.

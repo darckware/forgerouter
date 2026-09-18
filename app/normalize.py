@@ -10,6 +10,20 @@ common yardstick for the "tokens saved" dashboard indicator, independent of
 which provider/tokenizer actually serves the request. If the encoding can't be
 loaded (e.g. no network on first use), counting is skipped — this must never
 break routing.
+
+Multimodal content parts (`image_url`, `input_audio`) never reach the
+tokenizer as their raw payload — an embedded base64 image/audio blob is not
+English-like text, so tiktoken's BPE tokenizes it far denser than real
+prose; a single few-hundred-KB screenshot counted this way turned into
+hundreds of thousands of "tokens" (measured live: vision-demand route_events
+averaging 94k-350k prompt_tokens_compacted for what was an ordinary chat
+message plus one image, and 413-rejecting requests that were nowhere near
+actually too large). `_strip_multimodal_content` replaces each such part
+with a short placeholder before it's ever JSON-dumped for encoding, and
+`count_tokens` adds a flat per-item estimate back on top instead —
+approximating real provider vision/audio token cost (resolution/duration-
+based, not proportional to encoded size) far better than either tokenizing
+the raw bytes or ignoring them outright.
 """
 
 from __future__ import annotations
@@ -20,6 +34,13 @@ from typing import Any
 
 _TRAILING_WS = re.compile(r"[ \t]+\n")
 _BLANK_LINES = re.compile(r"\n{3,}")
+
+# Flat per-item estimates standing in for real provider vision/audio token
+# cost — deliberately conservative order-of-magnitude figures (see module
+# docstring), not a measured per-provider number. Never proportional to the
+# item's actual encoded size.
+_IMAGE_TOKEN_ESTIMATE = 1500
+_AUDIO_TOKEN_ESTIMATE = 300
 
 _encoding: Any = None
 _encoding_failed = False
@@ -37,14 +58,44 @@ def _get_encoding() -> Any:
     return _encoding
 
 
+def _strip_multimodal_content(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """(stripped_messages, extra_token_estimate) — replaces every
+    image_url/input_audio content part's payload with a short placeholder
+    (see module docstring for why the real payload must never be
+    tokenized), returning a flat estimate to add back per item. Messages
+    with plain string content (no multimodal parts) pass through
+    unchanged."""
+    extra_tokens = 0
+    stripped: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            stripped.append(message)
+            continue
+        new_content = []
+        for part in content:
+            part_type = part.get("type") if isinstance(part, dict) else None
+            if part_type == "image_url":
+                new_content.append({"type": "image_url", "image_url": {"url": "<image omitted>"}})
+                extra_tokens += _IMAGE_TOKEN_ESTIMATE
+            elif part_type == "input_audio":
+                new_content.append({"type": "input_audio", "input_audio": {"data": "<audio omitted>"}})
+                extra_tokens += _AUDIO_TOKEN_ESTIMATE
+            else:
+                new_content.append(part)
+        stripped.append({**message, "content": new_content})
+    return stripped, extra_tokens
+
+
 def count_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> int | None:
     encoding = _get_encoding()
     if encoding is None:
         return None
-    text = json.dumps(messages, ensure_ascii=False)
+    stripped, extra_tokens = _strip_multimodal_content(messages)
+    text = json.dumps(stripped, ensure_ascii=False)
     if tools:
         text += json.dumps(tools, ensure_ascii=False)
-    return len(encoding.encode(text))
+    return len(encoding.encode(text)) + extra_tokens
 
 
 def _compact_text(text: str) -> str:

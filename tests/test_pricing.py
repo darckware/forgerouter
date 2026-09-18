@@ -46,40 +46,81 @@ def test_reference_cost_override_takes_priority_over_bulk_catalog():
     assert cost == round(1000 * 2e-08 + 500 * 5e-08, 8)
 
 
+def _isolate_context_tiers(monkeypatch, live=None, overrides=None, model_catalog=None, catalog=None, discovered=None):
+    """Full isolation across all five context_window() tiers — the real
+    config/model_catalog.json (~60+ canonical entries) and
+    config/model_context_discovered.json must never leak into a test that
+    didn't ask for them."""
+    monkeypatch.setattr(pricing_module, "_live", live or {})
+    monkeypatch.setattr(pricing_module, "_overrides", overrides or {})
+    monkeypatch.setattr(pricing_module, "_model_catalog", model_catalog or {})
+    monkeypatch.setattr(pricing_module, "_catalog", catalog or {})
+    monkeypatch.setattr(pricing_module, "_discovered", discovered or {})
+
+
 def test_context_window_falls_through_price_only_live_entry(monkeypatch):
-    monkeypatch.setattr(
-        pricing_module,
-        "_live",
-        {"agg/model": {"input_cost_per_token": 0.1, "output_cost_per_token": 0.2}},
-    )
-    monkeypatch.setattr(pricing_module, "_overrides", {})
-    monkeypatch.setattr(
-        pricing_module,
-        "_catalog",
-        {"model": {"input_cost_per_token": 0.3, "output_cost_per_token": 0.4, "context_window": 131_072}},
+    _isolate_context_tiers(
+        monkeypatch,
+        live={"agg/model": {"input_cost_per_token": 0.1, "output_cost_per_token": 0.2}},
+        catalog={"model": {"input_cost_per_token": 0.3, "output_cost_per_token": 0.4, "context_window": 131_072}},
     )
 
     assert context_window("agg/model", "model") == 131_072
 
 
 def test_context_window_prefers_live_value_when_present(monkeypatch):
-    monkeypatch.setattr(pricing_module, "_live", {"agg/model": {"context_window": 200_000}})
-    monkeypatch.setattr(pricing_module, "_overrides", {"agg/model": {"context_window": 150_000}})
-    monkeypatch.setattr(pricing_module, "_catalog", {"model": {"context_window": 131_072}})
+    _isolate_context_tiers(
+        monkeypatch,
+        live={"agg/model": {"context_window": 200_000}},
+        overrides={"agg/model": {"context_window": 150_000}},
+        catalog={"model": {"context_window": 131_072}},
+    )
 
     assert context_window("agg/model", "model") == 200_000
 
 
 def test_context_window_falls_through_price_only_override_entry(monkeypatch):
-    monkeypatch.setattr(pricing_module, "_live", {})
-    monkeypatch.setattr(
-        pricing_module,
-        "_overrides",
-        {"agg/model": {"input_cost_per_token": 0.1, "output_cost_per_token": 0.2}},
+    _isolate_context_tiers(
+        monkeypatch,
+        overrides={"agg/model": {"input_cost_per_token": 0.1, "output_cost_per_token": 0.2}},
+        catalog={"model": {"context_window": 131_072}},
     )
-    monkeypatch.setattr(pricing_module, "_catalog", {"model": {"context_window": 131_072}})
 
     assert context_window("agg/model", "model") == 131_072
+
+
+def test_context_window_prefers_model_catalog_over_vendored_catalog(monkeypatch):
+    # The canonical model catalog is curated/verified per model, same tier
+    # confidence as overrides — it must outrank the generic vendored
+    # LiteLLM snapshot, which can be stale or match the wrong variant.
+    _isolate_context_tiers(
+        monkeypatch,
+        model_catalog={"vendor/model": {"context_window": 262_144}},
+        catalog={"model": {"context_window": 131_072}},
+    )
+
+    assert context_window("agg/vendor/model", "vendor/model") == 262_144
+
+
+def test_context_window_model_catalog_is_shared_across_provider_aliases(monkeypatch):
+    # The whole point of canonical_model_key(): the exact same LLM served by
+    # two different ForgeRouter providers, spelled identically except for an
+    # aggregator's ":free" marketing suffix, must resolve to the one shared
+    # catalog entry without needing a second copy.
+    _isolate_context_tiers(monkeypatch, model_catalog={"vendor/model": {"context_window": 262_144}})
+
+    assert context_window("Kilo/vendor/model:free", "vendor/model:free") == 262_144
+    assert context_window("nvidia/vendor/model", "vendor/model") == 262_144
+
+
+def test_canonical_model_key_applies_curated_alias(monkeypatch):
+    # A vendor slug two providers spell differently for the identical model —
+    # canonical_model_key() can't guess this; it's the curated
+    # _CANONICAL_ALIASES table's job.
+    monkeypatch.setattr(pricing_module, "_CANONICAL_ALIASES", {"vendor-a/model": "vendor-b/model"})
+
+    assert pricing_module.canonical_model_key("vendor-a/model") == "vendor-b/model"
+    assert pricing_module.canonical_model_key("vendor-a/model:free") == "vendor-b/model"
 
 
 def test_sync_provider_pricing_parses_aggregator_pricing(monkeypatch, tmp_path):
@@ -146,6 +187,8 @@ def test_sync_provider_pricing_also_captures_context_length_without_pricing(monk
     monkeypatch.setattr(pricing_module, "_LIVE_PATH", tmp_path / "model_pricing_live.json")
     monkeypatch.setattr(pricing_module, "_live", None)
     monkeypatch.setattr(pricing_module, "_live_failed", False)
+    monkeypatch.setattr(pricing_module, "_model_catalog", {})
+    monkeypatch.setattr(pricing_module, "_discovered", {})
 
     class FakeResponse:
         def json(self):
@@ -169,10 +212,9 @@ def test_sync_provider_pricing_also_captures_context_length_without_pricing(monk
 
 
 def test_context_window_falls_through_to_discovered_tier_as_last_resort(monkeypatch):
-    monkeypatch.setattr(pricing_module, "_live", {})
-    monkeypatch.setattr(pricing_module, "_overrides", {})
-    monkeypatch.setattr(pricing_module, "_catalog", {})
-    monkeypatch.setattr(pricing_module, "_discovered", {"nvidia/nvidia/some-model": {"context_window": 128_000}})
+    # Discovered is keyed canonically (by provider_model, decoration-stripped)
+    # — same as config/model_catalog.json — not by the exact public_id.
+    _isolate_context_tiers(monkeypatch, discovered={"nvidia/some-model": {"context_window": 128_000}})
 
     assert context_window("nvidia/nvidia/some-model", "nvidia/some-model") == 128_000
 
@@ -181,10 +223,11 @@ def test_context_window_prefers_catalog_over_discovered(monkeypatch):
     # A documented window always wins over a probed lower bound, even if the
     # probe happened to find a bigger number — the catalog entry is real,
     # confirmed data; the probe is just a confirmed floor.
-    monkeypatch.setattr(pricing_module, "_live", {})
-    monkeypatch.setattr(pricing_module, "_overrides", {})
-    monkeypatch.setattr(pricing_module, "_catalog", {"model": {"context_window": 131_072}})
-    monkeypatch.setattr(pricing_module, "_discovered", {"agg/model": {"context_window": 256_000}})
+    _isolate_context_tiers(
+        monkeypatch,
+        catalog={"model": {"context_window": 131_072}},
+        discovered={"model": {"context_window": 256_000}},
+    )
 
     assert context_window("agg/model", "model") == 131_072
 
@@ -196,11 +239,28 @@ def test_record_discovered_context_window_persists_and_updates_cache(monkeypatch
     monkeypatch.setattr(pricing_module, "_discovered_failed", False)
     monkeypatch.setattr(pricing_module, "_live", {})
     monkeypatch.setattr(pricing_module, "_overrides", {})
+    monkeypatch.setattr(pricing_module, "_model_catalog", {})
     monkeypatch.setattr(pricing_module, "_catalog", {})
 
-    pricing_module.record_discovered_context_window("nvidia/nvidia/some-model", 128_000, "confirmed lower bound")
+    pricing_module.record_discovered_context_window("nvidia/nvidia/some-model", "nvidia/some-model", 128_000, "confirmed lower bound")
 
     assert context_window("nvidia/nvidia/some-model", "nvidia/some-model") == 128_000
     saved = json.loads(discovered_path.read_text())
-    assert saved["nvidia/nvidia/some-model"]["context_window"] == 128_000
-    assert "confirmed lower bound" in saved["nvidia/nvidia/some-model"]["source"]
+    # Keyed canonically (the provider_model, unchanged here since it has no
+    # aggregator suffix to strip) so a different alias of the same LLM
+    # benefits from this one probe result too.
+    assert saved["nvidia/some-model"]["context_window"] == 128_000
+    assert "confirmed lower bound" in saved["nvidia/some-model"]["source"]
+
+
+def test_record_discovered_context_window_strips_aggregator_suffix_from_key(monkeypatch, tmp_path):
+    discovered_path = tmp_path / "model_context_discovered.json"
+    monkeypatch.setattr(pricing_module, "_DISCOVERED_PATH", discovered_path)
+    monkeypatch.setattr(pricing_module, "_discovered", None)
+    monkeypatch.setattr(pricing_module, "_discovered_failed", False)
+    _isolate_context_tiers(monkeypatch)
+
+    pricing_module.record_discovered_context_window("Kilo/vendor/model:free", "vendor/model:free", 128_000)
+
+    # A sibling alias without the aggregator suffix now resolves too.
+    assert context_window("nvidia/vendor/model", "vendor/model") == 128_000

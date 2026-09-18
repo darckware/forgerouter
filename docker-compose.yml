@@ -44,6 +44,12 @@ services:
       - ./config/model_pricing.json:/app/config/model_pricing.json
       - ./config/model_pricing_live.json:/app/config/model_pricing_live.json
       - ./config/model_pricing_overrides.json:/app/config/model_pricing_overrides.json
+      # Canonical model registry (read-write): one entry per real LLM, shared
+      # across every ForgeRouter provider alias that serves it — see
+      # app/pricing.py's module docstring (canonical_model_key()). No in-app
+      # writer yet, but mounted read-write for consistency with the other
+      # curated catalogs above and to survive a future one.
+      - ./config/model_catalog.json:/app/config/model_catalog.json
       # Actively-discovered context windows (read-write): POST /admin/pricing/
       # discover-context and scripts/discover_context_windows.py write here
       # (app/validation/context_probe.py) — same persist-across-deploys reasoning

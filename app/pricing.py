@@ -7,7 +7,10 @@ request would have cost at public commercial rates for an equivalent model,
 purely as an opportunity-cost reference. It is never billed and must never
 be confused with the real `cost` field in route_events.
 
-Three catalogs are consulted, in order:
+Three catalogs are consulted, in order, for *pricing* (cost genuinely can
+differ per provider — the same underlying model can be sold at different
+rates by different resellers, so pricing stays keyed by the exact
+ForgeRouter public_id, never shared across aliases):
 
 1. config/model_pricing_live.json — pricing read directly from the /models
    response of the providers ForgeRouter actually routes through (OpenRouter,
@@ -28,8 +31,29 @@ Three catalogs are consulted, in order:
    input/output cost per token) — refresh it periodically by re-running
    scripts/update_pricing.py, or via sync, against the upstream file.
 
-Lookup is a plain id match — no fuzzy matching. A model with no entry in any
-catalog gets no reference cost rather than a guessed one.
+Lookup for pricing is a plain id match — no fuzzy matching. A model with no
+entry in any catalog gets no reference cost rather than a guessed one.
+
+Context window is a different story: the same underlying LLM is routinely
+served by several different ForgeRouter providers under several different
+names (the same GLM-5.2 weights show up as "Kilo/z-ai/glm-5.2:free",
+"openrouter/z-ai/glm-5.2:free" and "nvidia/z-ai/glm-5.2" — three ForgeRouter
+public_ids, one real model). Keying context data per exact public_id like
+pricing does meant a real, verified context window had to be hand-copied
+into every alias separately (2026-09, the incident that motivated this) —
+a model added under a *new* alias of an already-known LLM silently came
+back "unknown" and lost forgerouter/auto eligibility until someone
+remembered to copy the number over again. `config/model_catalog.json` fixes
+that: it's keyed by `canonical_model_key()` — the underlying vendor model
+slug with aggregator marketing suffixes (":free", ...) stripped, plus a
+small curated alias table (`_CANONICAL_ALIASES`) for the rarer case where
+different providers spell the same vendor slug differently (e.g. NVIDIA's
+own NIM API calls a model "stepfun-ai/step-3.7-flash" where OpenRouter/Kilo
+call the identical weights "stepfun/step-3.7-flash"). One entry there now
+covers every alias of that model, present or future, automatically — no
+per-alias copy needed. `context_window()` checks it as an additional tier;
+`app.validation.context_probe`'s discovered results are keyed the same way,
+so a single probe benefits every alias too.
 """
 
 from __future__ import annotations
@@ -45,9 +69,23 @@ _LIVE_PATH = _CONFIG_DIR / "model_pricing_live.json"
 _OVERRIDES_PATH = _CONFIG_DIR / "model_pricing_overrides.json"
 _CATALOG_PATH = _CONFIG_DIR / "model_pricing.json"
 _DISCOVERED_PATH = _CONFIG_DIR / "model_context_discovered.json"
+_MODEL_CATALOG_PATH = _CONFIG_DIR / "model_catalog.json"
 
 LITELLM_SOURCE_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 _KEPT_MODES = ("chat", "completion")
+
+# Aggregator-added marketing decoration on the vendor's own model slug — never
+# part of the underlying model's real identity, so it must be stripped before
+# two aliases of the same LLM can be recognized as the same canonical key.
+_AGGREGATOR_SUFFIXES = (":free", ":extended", ":nitro", ":online", ":beta", ":thinking")
+
+# Curated for the rarer case where different providers spell the exact same
+# vendor model slug differently — canonical_model_key() can't guess these,
+# so each one needs a one-line entry here (never a full duplicate catalog
+# entry). Add to this only when you've confirmed it's really the same model.
+_CANONICAL_ALIASES: dict[str, str] = {
+    "stepfun-ai/step-3.7-flash": "stepfun/step-3.7-flash",
+}
 
 _live: dict[str, Any] | None = None
 _live_failed = False
@@ -57,6 +95,20 @@ _catalog: dict[str, Any] | None = None
 _catalog_failed = False
 _discovered: dict[str, Any] | None = None
 _discovered_failed = False
+_model_catalog: dict[str, Any] | None = None
+_model_catalog_failed = False
+
+
+def canonical_model_key(provider_model: str) -> str:
+    """The underlying vendor model slug, decoration-stripped — the shared key
+    every ForgeRouter alias of the same real LLM resolves to in
+    config/model_catalog.json, instead of needing its own duplicate entry."""
+    key = (provider_model or "").strip()
+    for suffix in _AGGREGATOR_SUFFIXES:
+        if key.endswith(suffix):
+            key = key[: -len(suffix)]
+            break
+    return _CANONICAL_ALIASES.get(key, key)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -108,18 +160,34 @@ def _get_discovered() -> dict[str, Any]:
     return _discovered or {}
 
 
-def record_discovered_context_window(public_id: str, window: int, note: str = "") -> None:
+def _get_model_catalog() -> dict[str, Any]:
+    global _model_catalog, _model_catalog_failed
+    if _model_catalog is None and not _model_catalog_failed:
+        try:
+            _model_catalog = _load_json(_MODEL_CATALOG_PATH)
+        except Exception:
+            _model_catalog_failed = True
+            _model_catalog = {}
+    return _model_catalog or {}
+
+
+def record_discovered_context_window(public_id: str, provider_model: str, window: int, note: str = "") -> None:
     """Persist a context window app.validation.context_probe actually
     confirmed by testing the live model — the lowest-priority tier in
     context_window() below, since it's a confirmed lower bound from an
     active probe rather than something the provider documents. Never call
-    this with a guessed/inferred value; only a probe result."""
+    this with a guessed/inferred value; only a probe result.
+
+    Keyed by canonical_model_key(provider_model), not the exact public_id —
+    the same real LLM under a different ForgeRouter alias benefits from this
+    one probe result too, instead of needing its own separate probe."""
     global _discovered, _discovered_failed
+    key = canonical_model_key(provider_model)
     discovered = dict(_get_discovered())
-    discovered[public_id] = {
+    discovered[key] = {
         "context_window": int(window),
-        "source": f"forgerouter context probe, {datetime.now(timezone.utc).date().isoformat()}"
-        + (f" ({note})" if note else ""),
+        "source": f"forgerouter context probe against {public_id}, "
+        f"{datetime.now(timezone.utc).date().isoformat()}" + (f" ({note})" if note else ""),
     }
     with open(_DISCOVERED_PATH, "w", encoding="utf-8") as fh:
         json.dump(discovered, fh, indent=1, sort_keys=True)
@@ -149,24 +217,31 @@ def _lookup(public_id: str, provider_model: str) -> dict[str, Any] | None:
 def context_window(public_id: str, provider_model: str) -> int | None:
     """The model's real input context window in tokens.
 
-    Resolve this field independently across the pricing tiers. A higher-tier
+    Resolve this field independently across the tiers below. A higher-tier
     entry may contain authoritative pricing without context metadata; that
     must not hide a context window available from a lower tier.
 
-    The `discovered` tier (config/model_context_discovered.json, written by
-    app.validation.context_probe) is checked last, below the vendored
-    catalog — it's a confirmed lower bound from actively testing the live
-    model, not something the provider documents, so a documented number
-    always wins when one exists.
+    Tier order: live (exact public_id, the literal endpoint) → overrides
+    (exact public_id, for a deliberately-different single alias) → the
+    canonical model catalog (config/model_catalog.json, shared across every
+    alias of the same real LLM — see module docstring) → the vendored
+    LiteLLM catalog (public_id / provider_model / bare suffix) → discovered
+    (config/model_context_discovered.json, written by
+    app.validation.context_probe, also canonical-keyed) as the last resort —
+    it's a confirmed lower bound from actively testing the live model, not
+    something the provider documents, so a documented number always wins
+    when one exists.
     """
     public_id = public_id or ""
     provider_model = provider_model or ""
+    canonical_key = canonical_model_key(provider_model)
     catalog = _get_catalog()
     entries = [
         _get_live().get(public_id),
         _get_overrides().get(public_id),
+        _get_model_catalog().get(canonical_key),
         *(catalog.get(key) for key in (public_id, provider_model, provider_model.rsplit("/", 1)[-1])),
-        _get_discovered().get(public_id),
+        _get_discovered().get(canonical_key),
     ]
     for entry in entries:
         window = entry.get("context_window") if isinstance(entry, dict) else None

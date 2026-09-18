@@ -105,7 +105,10 @@ def test_admin_discover_context_skips_already_catalogued_models(monkeypatch):
 
     monkeypatch.setattr("app.validation.context_probe.probe_context_window", fake_probe)
     persisted = {}
-    monkeypatch.setattr("app.pricing.record_discovered_context_window", lambda public_id, window, note="": persisted.update({public_id: window}))
+    monkeypatch.setattr(
+        "app.pricing.record_discovered_context_window",
+        lambda public_id, provider_model, window, note="": persisted.update({public_id: window}),
+    )
 
     response = client.post("/admin/pricing/discover-context", headers={"Authorization": "Bearer secret"})
 

@@ -44,7 +44,7 @@ def main() -> None:
     for model in candidates:
         result = probe_context_window(model)
         if result.context_window is not None:
-            record_discovered_context_window(model.id, result.context_window, result.note)
+            record_discovered_context_window(model.id, model.provider_model, result.context_window, result.note)
             print(f"{model.id}: {result.context_window} ({result.note})")
         else:
             print(f"{model.id}: inconclusive ({result.note})")

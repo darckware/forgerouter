@@ -3149,7 +3149,7 @@ def admin_discover_context(request: Request, limit: int = 10):
             continue
         if result.context_window is not None:
             try:
-                record_discovered_context_window(model.id, result.context_window, result.note)
+                record_discovered_context_window(model.id, model.provider_model, result.context_window, result.note)
             except Exception:
                 pass
         results.append({

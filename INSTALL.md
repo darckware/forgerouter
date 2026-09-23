@@ -32,8 +32,8 @@ maintainer runs it in.
 ## Quick start (scripted)
 
 ```bash
-git clone https://github.com/marcelodarckferreira/ForgeRouter.git
-cd ForgeRouter
+git clone https://github.com/darckware/forgerouter.git
+cd forgerouter
 ./scripts/install_standalone.sh
 ```
 

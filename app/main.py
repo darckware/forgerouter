@@ -3554,7 +3554,7 @@ def admin_subscription_catalog():
         return {"catalog": []}
 
 
-FORGEROUTER_GITHUB_REPO = "https://github.com/marcelodarckferreira/ForgeRouter"
+FORGEROUTER_GITHUB_REPO = "https://github.com/darckware/forgerouter"
 
 
 def _latest_bundled_migration() -> str | None:

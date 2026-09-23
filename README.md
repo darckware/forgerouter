@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  Gateway de LLM self-hosted que roteia chat completions e embeddings entre múltiplos provedores com seleção baseada em saúde, fallback automático e roteamento por demanda — com API compatível com OpenAI, um tradutor para a Anthropic Messages API e um tradutor para a OpenAI Responses API, todos compartilhando o mesmo pipeline de roteamento e com streaming incremental de ponta a ponta.
+  Self-hosted LLM gateway that routes chat completions and embeddings across multiple providers with health-based selection, automatic fallback and demand-based routing — with an OpenAI-compatible API, a translator for the Anthropic Messages API and a translator for the OpenAI Responses API, all sharing the same routing pipeline and with end-to-end incremental streaming.
 </p>
 
 <p align="center">
@@ -14,42 +14,42 @@
 
 ---
 
-## Visão Geral
+## Overview
 
-O ForgeRouter fica na frente de um pool de provedores de LLM — modelos locais via Ollama, provedores por chave de API (Groq, OpenRouter, Mistral e outros configuráveis) e planos de assinatura via OAuth ou chave de API (Claude Code, Codex, Antigravity, Z.ai, DeepSeek, xAI Grok, Nous Portal) — e os expõe como um único gateway. Basta apontar qualquer cliente compatível com OpenAI, o Claude Code ou a Codex CLI para ele: o serviço cuida da seleção de provedor, verificação de saúde e failover, de modo que a queda de um provedor ou o rate limit de um plano gratuito nunca derrubem uma requisição.
+ForgeRouter sits in front of a pool of LLM providers — local models via Ollama, API-key providers (Groq, OpenRouter, Mistral and other configurable ones) and subscription plans via OAuth or API key (Claude Code, Codex, Antigravity, Z.ai, DeepSeek, xAI Grok, Nous Portal) — and exposes them as a single gateway. Just point any OpenAI-compatible client, Claude Code or the Codex CLI at it: the service handles provider selection, health checking and failover, so a provider outage or a free-tier plan's rate limit never brings down a request.
 
-Foi construído para o ecossistema Hermes (documentação canônica em `CLAUDE.md`), mas não possui nenhuma dependência de vendor específico — funciona como gateway de LLM genérico em qualquer instalação (ver [`INSTALL.md`](INSTALL.md) para o modo standalone).
+It was built for the Hermes ecosystem (canonical documentation in `CLAUDE.md`), but has no dependency on any specific vendor — it works as a generic LLM gateway in any installation (see [`INSTALL.md`](INSTALL.md) for standalone mode).
 
-O serviço fala três protocolos de cliente contra o mesmo pipeline de roteamento/fallback, além de um endpoint dedicado de embeddings:
+The service speaks three client protocols against the same routing/fallback pipeline, plus a dedicated embeddings endpoint:
 
-- **`/v1/chat/completions`** e **`/v1/models`** — compatível com OpenAI, incluindo streaming (SSE).
-- **`/v1/messages`** — Anthropic Messages API, usada pelo Claude Code. O streaming é real e incremental, traduzido pedaço a pedaço a partir da resposta do provedor conforme ela chega — não é uma resposta completa reproduzida depois como um burst sintético de SSE.
-- **`/v1/responses`** — OpenAI Responses API, usada pela Codex CLI (obrigatória desde que o Codex removeu o suporte a Chat Completions na v0.138). Mesmo streaming real e incremental de `/v1/messages`.
-- **`/v1/embeddings`** — compatível com OpenAI, passando pela mesma seleção de candidatos e fallback baseados em saúde usados no chat.
+- **`/v1/chat/completions`** and **`/v1/models`** — OpenAI-compatible, including streaming (SSE).
+- **`/v1/messages`** — Anthropic Messages API, used by Claude Code. Streaming is real and incremental, translated chunk by chunk from the provider's response as it arrives — not a complete response replayed afterward as a synthetic SSE burst.
+- **`/v1/responses`** — OpenAI Responses API, used by the Codex CLI (required since Codex removed Chat Completions support in v0.138). Same real, incremental streaming as `/v1/messages`.
+- **`/v1/embeddings`** — OpenAI-compatible, going through the same health-based candidate selection and fallback used in chat.
 
-O serviço inclui um dashboard administrativo embutido para gerenciar provedores, agentes, roteamento e uso — sem necessidade de um serviço separado.
+The service includes a built-in admin dashboard for managing providers, agents, routing and usage — no separate service required.
 
-## Principais Funcionalidades
+## Key Features
 
-- **Três protocolos de cliente, um único roteador** — OpenAI Chat Completions, Anthropic Messages e OpenAI Responses são todos traduzidos para a mesma requisição interna e compartilham a mesma seleção de candidatos, fallback e lógica de saúde. Os três fazem streaming incremental a partir da resposta real do provedor.
-- **Roteamento multi-provedor** — mistura provedores locais (Ollama) e remotos (por chave de API ou por assinatura/OAuth) em um único pool, organizado por tiers de prioridade.
-- **Seleção baseada em saúde com fallback automático** — os candidatos são tentados em ordem; um provedor com falha, rate-limited ou não saudável é pulado em favor do próximo saudável. Um `model` específico na requisição é uma *preferência*, não um filtro exclusivo — o restante do pool saudável permanece disponível como fallback.
-- **Roteamento por demanda** — modelos virtuais (`forgerouter/auto`, `simple`, `standard`, `complex`, `reasoning`, `vision`, `audio`, `code`) classificam cada requisição a partir do seu conteúdo (partes de imagem ou áudio, marcadores/fences de código, linguagem de raciocínio, tamanho do prompt) e a roteiam por uma cadeia ordenada de modelos concretos.
-- **Inteligência de roteamento em memória** — circuit breaker por provedor (falhas consecutivas o abrem temporariamente), sticky routing (o último modelo bem-sucedido de um agente para uma demanda permanece "grudado" por um curto período, preservando caches de prompt do provedor) e uma pontuação dinâmica que combina força estática do modelo com taxa de sucesso/latência recentes.
-- **Scanner de saúde dos provedores com watchdog em segundo plano** — envia periodicamente chat completions reais a cada modelo configurado e detecta também falhas *silenciosas* (HTTP 200 com conteúdo vazio, texto de erro de cota/cobrança/autenticação no corpo), não apenas erros de conexão. Um scan completo roda assim que o serviço sobe, e uma checagem em segundo plano a cada 60s dispara um rescan automático (limitado a uma vez a cada 5 minutos) sempre que o pool saudável cai abaixo de um mínimo.
-- **Compactação de contexto (sem perdas)** — remove formatação/espaços em branco incidentais das mensagens antes de enviá-las ao provedor; nenhum conteúdo semântico é removido. As contagens de tokens antes/depois são registradas por requisição.
-- **Truncamento de contexto (com perdas, opt-in)** — válvula de segurança para históricos de conversa que crescem sem controle: quando os tokens estimados de uma requisição ultrapassam um percentual configurável da *janela de contexto real do modelo selecionado*, os turnos mais antigos são resumidos por um modelo barato (preservando nomes, decisões, números) e substituídos por uma nota condensada, em vez de estourar o limite real do modelo. Desativado por padrão; em caso de falha no resumo, cai para um descarte mecânico simples.
-- **Chaves de API e controles por agente** — emite uma chave de API distinta por cliente/agente conectado, restringe-a a um subconjunto de modelos ou grupos de capacidade, define um orçamento mensal de custo de referência e classifica o agente como conversacional ou como consumidor de serviço interno.
-- **Estimativa de custo de referência** — como o ForgeRouter é construído em torno de roteamento por camada gratuita, o custo real cobrado é quase sempre zero; ele estima o que a requisição *teria custado* às taxas comerciais públicas de um modelo equivalente, puramente como uma métrica de custo de oportunidade.
-- **Auditoria sem armazenar conversas** — o ForgeRouter não persiste o corpo das mensagens por design. A única exceção limitada é um preview de ~100 caracteres da última mensagem do usuário por requisição, mantido para auditar no que um agente está gastando sua cota.
-- **Dashboard administrativo** — interface React/TypeScript para gerenciar provedores, agentes, cadeias de roteamento/demanda, pricing e uso, servida diretamente pela API.
-- **Persistência em banco com fallback para YAML** — o registro de provedores vive no PostgreSQL; um YAML embutido (`config/providers.yaml`) é usado automaticamente se o banco estiver inacessível ou vazio, para que o roteamento nunca pare por causa dele.
+- **Three client protocols, one router** — OpenAI Chat Completions, Anthropic Messages and OpenAI Responses are all translated into the same internal request and share the same candidate selection, fallback and health logic. All three stream incrementally from the real provider response.
+- **Multi-provider routing** — mixes local (Ollama) and remote (API-key or subscription/OAuth) providers into a single pool, organized by priority tiers.
+- **Health-based selection with automatic fallback** — candidates are tried in order; a failed, rate-limited or unhealthy provider is skipped in favor of the next healthy one. A specific `model` in the request is a *preference*, not an exclusive filter — the rest of the healthy pool remains available as fallback.
+- **Demand-based routing** — virtual models (`forgerouter/auto`, `simple`, `standard`, `complex`, `reasoning`, `vision`, `audio`, `code`) classify each request from its content (image or audio parts, code fences/markers, reasoning language, prompt size) and route it through an ordered chain of concrete models.
+- **In-memory routing intelligence** — per-provider circuit breaker (consecutive failures open it temporarily), sticky routing (an agent's last successful model for a given demand stays "stuck" for a short period, preserving provider prompt caches) and a dynamic score combining static model strength with recent success rate/latency.
+- **Provider health scanner with background watchdog** — periodically sends real chat completions to each configured model and also detects *silent* failures (HTTP 200 with empty content, quota/billing/auth error text in the body), not just connection errors. A full scan runs as soon as the service starts, and a background check every 60s triggers an automatic rescan (limited to once every 5 minutes) whenever the healthy pool drops below a minimum.
+- **Context compaction (lossless)** — strips incidental formatting/whitespace from messages before sending them to the provider; no semantic content is removed. Before/after token counts are logged per request.
+- **Context truncation (lossy, opt-in)** — a safety valve for conversation histories that grow unchecked: when a request's estimated tokens exceed a configurable percentage of the *selected model's real context window*, the oldest turns are summarized by a cheap model (preserving names, decisions, numbers) and replaced with a condensed note, instead of overflowing the model's real limit. Disabled by default; falls back to a simple mechanical drop if the summarization fails.
+- **API keys and per-agent controls** — issues a distinct API key per connected client/agent, restricts it to a subset of models or capability groups, sets a monthly reference cost budget, and classifies the agent as conversational or as an internal service consumer.
+- **Reference cost estimation** — since ForgeRouter is built around free-tier routing, the real charged cost is almost always zero; it estimates what the request *would have cost* at the public commercial rates of an equivalent model, purely as an opportunity-cost metric.
+- **Auditing without storing conversations** — ForgeRouter does not persist message bodies by design. The one limited exception is a ~100-character preview of the last user message per request, kept to audit what an agent is spending its quota on.
+- **Admin dashboard** — React/TypeScript interface for managing providers, agents, routing/demand chains, pricing and usage, served directly by the API.
+- **Database persistence with YAML fallback** — the provider registry lives in PostgreSQL; a built-in YAML file (`config/providers.yaml`) is used automatically if the database is unreachable or empty, so routing never stops because of it.
 
-## Provedores e Modelos Cadastrados
+## Registered Providers and Models
 
-O ForgeRouter possui suporte nativo e pré-configurações (presets) para múltiplos provedores do ecossistema de LLMs gratuitas e pagas, com links rápidos para obtenção de chaves e documentação:
+ForgeRouter has native support and presets for multiple providers across the free and paid LLM ecosystem, with quick links to obtain keys and documentation:
 
-| Provedor | Tipo de Acesso | Base URL | Website Oficial | Obter Chave / Token |
+| Provider | Access Type | Base URL | Official Website | Get Key / Token |
 | :--- | :---: | :--- | :---: | :---: |
 | **Groq** | `api_key` (Free) | `https://api.groq.com/openai/v1` | [groq.com](https://groq.com) | [Console Keys](https://console.groq.com/keys) |
 | **Cerebras** | `api_key` (Free) | `https://api.cerebras.ai/v1` | [cerebras.ai](https://cerebras.ai) | [Cloud Portal](https://cloud.cerebras.ai) |
@@ -65,121 +65,121 @@ O ForgeRouter possui suporte nativo e pré-configurações (presets) para múlti
 | **DeepInfra** | `api_key` (Free/Paid) | `https://api.deepinfra.com/v1/openai` | [deepinfra.com](https://deepinfra.com) | [Dashboard Keys](https://deepinfra.com/dash/api_keys) |
 | **OVHcloud AI Endpoints** | `api_key` (Free) | `https://oai.endpoints.kepler.ai.cloud.ovh.net/v1` | [ovhcloud.com](https://www.ovhcloud.com) | [OVH Manager](https://www.ovh.com/manager) |
 | **Novita AI** | `api_key` (Free/Paid) | `https://api.novita.ai/openai/v1` | [novita.ai](https://novita.ai) | [Key Management](https://novita.ai/settings/key-management) |
-| **Pollinations.ai** | `api_key` (Free/Open) | `https://text.pollinations.ai/openai` | [pollinations.ai](https://pollinations.ai) | [Acesso Aberto](https://pollinations.ai) |
+| **Pollinations.ai** | `api_key` (Free/Open) | `https://text.pollinations.ai/openai` | [pollinations.ai](https://pollinations.ai) | [Open Access](https://pollinations.ai) |
 | **Mistral AI** | `api_key` (Free/Paid) | `https://api.mistral.ai/v1` | [mistral.ai](https://mistral.ai) | [Console Keys](https://console.mistral.ai/api-keys) |
 | **Cohere** | `api_key` (Free/Trial) | `https://api.cohere.ai/compatibility/v1` | [cohere.com](https://cohere.com) | [Dashboard Keys](https://dashboard.cohere.com/api-keys) |
 | **Cloudflare Workers AI** | `api_key` (Free) | `https://api.cloudflare.com/.../ai/v1` | [cloudflare.com](https://ai.cloudflare.com) | [API Tokens](https://dash.cloudflare.com/profile/api-tokens) |
 | **OpenRouter** | `api_key` (Free/Paid) | `https://openrouter.ai/api/v1` | [openrouter.ai](https://openrouter.ai) | [Keys](https://openrouter.ai/keys) |
 | **NVIDIA NIM** | `api_key` (Free Credits) | `https://integrate.api.nvidia.com/v1` | [build.nvidia.com](https://build.nvidia.com) | [NVIDIA Build](https://build.nvidia.com) |
-| **Claude Code** | `subscription` (OAuth) | Handler dedicado / Anthropic | [anthropic.com](https://anthropic.com) | `~/.claude/.credentials.json` |
-| **Google Antigravity** | `subscription` (OAuth) | Handler dedicado / Cloud API | [cloud.google.com](https://cloud.google.com) | `~/.gemini/antigravity-cli` |
-| **OpenAI Codex** | `subscription` (OAuth) | Handler dedicado / Codex | [chatgpt.com](https://chatgpt.com) | `~/.codex` |
+| **Claude Code** | `subscription` (OAuth) | Dedicated handler / Anthropic | [anthropic.com](https://anthropic.com) | `~/.claude/.credentials.json` |
+| **Google Antigravity** | `subscription` (OAuth) | Dedicated handler / Cloud API | [cloud.google.com](https://cloud.google.com) | `~/.gemini/antigravity-cli` |
+| **OpenAI Codex** | `subscription` (OAuth) | Dedicated handler / Codex | [chatgpt.com](https://chatgpt.com) | `~/.codex` |
 | **Z.ai (Zhipu GLM)** | `subscription` / `api_key` | `https://api.z.ai/api/coding/paas/v4` | [z.ai](https://z.ai) | [Z.ai Portal](https://z.ai) |
-| **Ollama Local** | `local` | `http://127.0.0.1:11434/v1` | [ollama.com](https://ollama.com) | Local / Sem Chave |
+| **Ollama Local** | `local` | `http://127.0.0.1:11434/v1` | [ollama.com](https://ollama.com) | Local / No Key |
 
-> **Nota sobre Meta-Routers / LLMs Automáticas:** Todos os modelos que atuam como meta-roteadores (ex.: `openrouter/auto`, `openrouter/free`, `kilo-auto/*`, `pareto-code`, `fusion`) são excluídos e bloqueados automaticamente para preservar o controle estrito de latência, saúde e fidelidade de roteamento do ForgeRouter.
+> **Note on Meta-Routers / Auto LLMs:** All models that act as meta-routers (e.g. `openrouter/auto`, `openrouter/free`, `kilo-auto/*`, `pareto-code`, `fusion`) are automatically excluded and blocked to preserve ForgeRouter's strict control over latency, health and routing fidelity.
 
 
-## Arquitetura
+## Architecture
 
 ```text
-Cliente (OpenAI SDK, Claude Code, Codex CLI, curl, ...)
+Client (OpenAI SDK, Claude Code, Codex CLI, curl, ...)
         │
         ▼
  POST /v1/chat/completions  ·  /v1/messages  ·  /v1/responses  ·  /v1/embeddings
-        │                       (traduzido para uma requisição
-        │                        de Chat Completions e de volta)
+        │                       (translated into a Chat
+        │                        Completions request and back)
         ▼
- Carrega o registro de provedores (PostgreSQL, com fallback para YAML)
-        │
-        ▼
- Classifica a demanda (auto/simple/standard/complex/reasoning/vision/audio/code)
+ Loads the provider registry (PostgreSQL, with YAML fallback)
         │
         ▼
- Infere a capacidade → filtra candidatos saudáveis/habilitados → ordena por
- cadeia de demanda, tier e pontuação dinâmica
+ Classifies the demand (auto/simple/standard/complex/reasoning/vision/audio/code)
         │
         ▼
- Compactação de contexto (sem perdas) → truncamento (opt-in, com perdas) →
- tenta os candidatos em ordem
+ Infers capability → filters healthy/enabled candidates → orders by
+ demand chain, tier and dynamic score
         │
-        ├─ sucesso ───────────► resposta enviada/streamada ao cliente
+        ▼
+ Context compaction (lossless) → truncation (opt-in, lossy) →
+ tries the candidates in order
         │
-        └─ falha ── registra route event, marca não saudável ── tenta o próximo
+        ├─ success ───────────► response sent/streamed to the client
+        │
+        └─ failure ── logs route event, marks unhealthy ── tries the next
                                                                        │
-                                                        todos falharam ┴─► 502 all_providers_failed
+                                                        all failed ┴─► 502 all_providers_failed
 ```
 
 ```mermaid
 flowchart LR
-    Client["Cliente\n(OpenAI SDK / Claude Code / Codex CLI)"] --> API["FastAPI\n/v1/chat/completions\n/v1/messages · /v1/responses\n/v1/embeddings"]
-    API --> Registry["Registro de provedores\n(PostgreSQL + fallback YAML)"]
-    API --> Routing["Roteamento por demanda\n+ health/fallback/circuit breaker"]
+    Client["Client\n(OpenAI SDK / Claude Code / Codex CLI)"] --> API["FastAPI\n/v1/chat/completions\n/v1/messages · /v1/responses\n/v1/embeddings"]
+    API --> Registry["Provider registry\n(PostgreSQL + YAML fallback)"]
+    API --> Routing["Demand-based routing\n+ health/fallback/circuit breaker"]
     Routing --> Local["Ollama (local)"]
-    Routing --> ApiKey["Provedores por API key\n(Groq, OpenRouter, Mistral, ...)"]
-    Routing --> OAuth["Planos por assinatura\n(Claude Code, Codex, Antigravity,\nZ.ai, DeepSeek, xAI Grok — OAuth;\nNous Portal — chave de API)"]
+    Routing --> ApiKey["API-key providers\n(Groq, OpenRouter, Mistral, ...)"]
+    Routing --> OAuth["Subscription plans\n(Claude Code, Codex, Antigravity,\nZ.ai, DeepSeek, xAI Grok — OAuth;\nNous Portal — API key)"]
     API --> DB[(PostgreSQL\nschema ai_router)]
-    API --> Dashboard["Dashboard administrativo\n(React/TypeScript)"]
+    API --> Dashboard["Admin dashboard\n(React/TypeScript)"]
 ```
 
-Cada provedor tem um `api_format` (`openai` ou `anthropic`) descrevendo seu protocolo de conexão; a maioria dos planos de assinatura (Claude Code, Codex, Antigravity, Z.ai, DeepSeek, xAI Grok) passa por handlers de plano dedicados (`app/providers/plans.py`) que gerenciam tokens OAuth em vez de chaves de API estáticas — o Z.ai é o único que também aceita uma chave de API paga (`api.z.ai/api/coding/paas/v4`) como caminho alternativo ao OAuth. O Nous Portal não tem handler dedicado nem OAuth: não existe um servidor de autorização OAuth público para apps de terceiros se registrarem, e — verificado na prática — a exigência de crédito pré-pago da conta vale igualmente para a chave de API estática e para o login via CLI (`hermes proxy`), então é só uma chave de API estática colada no dashboard, igual Moonshot/MiniMax/Ollama Cloud (ver `docs/SUBSCRIPTION_NOUS_PORTAL_REFERENCE.md`).
+Each provider has an `api_format` (`openai` or `anthropic`) describing its connection protocol; most subscription plans (Claude Code, Codex, Antigravity, Z.ai, DeepSeek, xAI Grok) go through dedicated plan handlers (`app/providers/plans.py`) that manage OAuth tokens instead of static API keys — Z.ai is the only one that also accepts a paid API key (`api.z.ai/api/coding/paas/v4`) as an alternative path to OAuth. Nous Portal has no dedicated handler and no OAuth: there is no public OAuth authorization server for third-party apps to register with, and — verified in practice — the account's prepaid credit requirement applies equally to the static API key and to CLI login (`hermes proxy`), so it's just a static API key pasted into the dashboard, the same as Moonshot/MiniMax/Ollama Cloud (see `docs/SUBSCRIPTION_NOUS_PORTAL_REFERENCE.md`).
 
-## Tecnologias
+## Technologies
 
-| Camada | Tecnologia |
+| Layer | Technology |
 |---|---|
 | Backend | Python 3.11+, FastAPI, Uvicorn |
-| Persistência | PostgreSQL (schema `ai_router`, acesso via `psycopg`) |
+| Persistence | PostgreSQL (schema `ai_router`, accessed via `psycopg`) |
 | Frontend / Dashboard | React, TypeScript, Vite |
-| Contagem de tokens | `tiktoken` (`cl100k_base`) |
-| Testes | `pytest` (40 arquivos de teste, sem banco/provedores reais) |
-| Containerização | Docker, Docker Compose |
-| Runtime WASM | `wasmtime` (isolamento de execução) |
+| Token counting | `tiktoken` (`cl100k_base`) |
+| Tests | `pytest` (40 test files, no real database/providers) |
+| Containerization | Docker, Docker Compose |
+| WASM runtime | `wasmtime` (execution isolation) |
 
-## Estrutura do Projeto
+## Project Structure
 
 ```text
 forgerouter/
 ├── app/
-│   ├── main.py               # FastAPI app: rotas /v1/*, /auth/*, /admin/*
-│   ├── registry.py           # Registro de provedores (DB + fallback YAML)
-│   ├── demand.py             # Classificação de demanda (auto/code/vision/...)
-│   ├── ranking.py            # Ordenação de candidatos (tier, dynamic score)
-│   ├── routing_state.py      # Circuit breaker, sticky routing, cache de performance
-│   ├── normalize.py          # Compactação e truncamento de contexto
-│   ├── pricing.py            # Estimativa de custo de referência
-│   ├── health_watchdog.py    # Rescans automáticos em segundo plano
-│   ├── storage.py            # Todo o acesso a PostgreSQL (SQL cru via psycopg)
-│   ├── deploy_config.py      # Escrita de config/chave em agentes externos
-│   ├── providers/            # Clientes por provedor/plano (openai, anthropic,
+│   ├── main.py               # FastAPI app: /v1/*, /auth/*, /admin/* routes
+│   ├── registry.py           # Provider registry (DB + YAML fallback)
+│   ├── demand.py             # Demand classification (auto/code/vision/...)
+│   ├── ranking.py            # Candidate ordering (tier, dynamic score)
+│   ├── routing_state.py      # Circuit breaker, sticky routing, performance cache
+│   ├── normalize.py          # Context compaction and truncation
+│   ├── pricing.py            # Reference cost estimation
+│   ├── health_watchdog.py    # Automatic background rescans
+│   ├── storage.py            # All PostgreSQL access (raw SQL via psycopg)
+│   ├── deploy_config.py      # Writes config/key to external agents
+│   ├── providers/            # Per-provider/plan clients (openai, anthropic,
 │   │                         # claude_code, codex, antigravity, zai,
 │   │                         # deepseek_web, xai_grok)
-│   └── validation/           # Scanner e classificação de saúde
+│   └── validation/           # Health scanner and classification
 ├── config/
-│   ├── providers.yaml            # Registro de fallback (usado sem DB)
-│   ├── model_pricing*.json       # Catálogos de pricing (vendorizado/live/overrides)
-├── db/                        # Migrations SQL numeradas (aplicadas manualmente)
-├── docs/                      # PRD, spec, referências de assinatura por provedor
-├── frontend/                  # Dashboard React/TypeScript (build em frontend/dist)
-├── scripts/                   # build, sync de pricing, health scan, OAuth login etc.
-├── tests/                     # Suíte pytest (FastAPI TestClient, tudo mockado)
-├── docker-compose.yml             # Deploy no ecossistema Hermes/Foundation
-├── docker-compose.local.yml       # Igual ao acima, com host networking (Ollama local)
-├── docker-compose.standalone.yml  # Deploy autônomo, com PostgreSQL embutido
+│   ├── providers.yaml            # Fallback registry (used without DB)
+│   ├── model_pricing*.json       # Pricing catalogs (vendored/live/overrides)
+├── db/                        # Numbered SQL migrations (applied manually)
+├── docs/                      # PRD, spec, per-provider subscription references
+├── frontend/                  # React/TypeScript dashboard (build in frontend/dist)
+├── scripts/                   # build, pricing sync, health scan, OAuth login, etc.
+├── tests/                     # pytest suite (FastAPI TestClient, everything mocked)
+├── docker-compose.yml             # Deploy into the Hermes/Foundation ecosystem
+├── docker-compose.local.yml       # Same as above, with host networking (local Ollama)
+├── docker-compose.standalone.yml  # Standalone deploy, with embedded PostgreSQL
 ├── Dockerfile
-├── INSTALL.md                 # Guia de instalação standalone, passo a passo
-└── CLAUDE.md                  # Guia de arquitetura para agentes/desenvolvedores
+├── INSTALL.md                 # Step-by-step standalone installation guide
+└── CLAUDE.md                  # Architecture guide for agents/developers
 ```
 
-## Pré-requisitos
+## Prerequisites
 
-- Docker e Docker Compose
-- Opcional: [Ollama](https://ollama.com) rodando localmente, para fallback com modelo local
-- Todo o restante (Python 3.11+, dependências, Node/Vite) já está encapsulado na imagem Docker — não é necessário runtime Python/Node no host para rodar o serviço
+- Docker and Docker Compose
+- Optional: [Ollama](https://ollama.com) running locally, for fallback with a local model
+- Everything else (Python 3.11+, dependencies, Node/Vite) is already bundled into the Docker image — no Python/Node runtime is needed on the host to run the service
 
-## Instalação
+## Installation
 
-**Rodando o ForgeRouter isoladamente?** Use o instalador standalone — ele empacota seu próprio container PostgreSQL, então não há nada a provisionar antes:
+**Running ForgeRouter standalone?** Use the standalone installer — it bundles its own PostgreSQL container, so there's nothing to provision beforehand:
 
 ```bash
 git clone https://github.com/marcelodarckferreira/ForgeRouter.git
@@ -187,113 +187,113 @@ cd ForgeRouter
 ./scripts/install_standalone.sh
 ```
 
-O script cria o `.env` a partir de `.env.example` (se ausente), gera senhas de banco aleatórias, sobe o PostgreSQL, aplica o schema, builda a imagem e inicia o ForgeRouter. É seguro executar novamente — todos os passos são idempotentes. Veja [`INSTALL.md`](INSTALL.md) para o passo a passo manual equivalente, o que o script deliberadamente não faz, e notas de backup.
+The script creates `.env` from `.env.example` (if missing), generates random database passwords, brings up PostgreSQL, applies the schema, builds the image and starts ForgeRouter. It's safe to run again — every step is idempotent. See [`INSTALL.md`](INSTALL.md) for the equivalent manual step-by-step, what the script deliberately doesn't do, and backup notes.
 
-Verifique se está no ar:
+Check that it's up:
 
 ```bash
 curl http://127.0.0.1:2100/health
 # {"status":"ok","version":"0.1.0","git_sha":"<commit>"}
 ```
 
-O dashboard fica em `http://127.0.0.1:2100/` — o login padrão é `admin` / `admin`, com troca de senha obrigatória no primeiro acesso.
+The dashboard lives at `http://127.0.0.1:2100/` — the default login is `admin` / `admin`, with a mandatory password change on first access.
 
-> **Fazendo deploy junto de um PostgreSQL já existente e de uma rede Docker externa** (por exemplo, como parte de um setup multi-serviço maior)? Use `docker-compose.yml` diretamente: aponte `DATABASE_URL` para o seu banco, aplique `db/*.sql` manualmente e em ordem contra ele, entre na sua própria rede Docker externa no lugar de `foundation_network`, e rode `./scripts/build.sh && docker compose up -d`. O `docker-compose.local.yml` é a mesma ideia com host networking, para alcançar um Ollama local em `127.0.0.1:11434`:
+> **Deploying alongside an existing PostgreSQL and an external Docker network** (for example, as part of a larger multi-service setup)? Use `docker-compose.yml` directly: point `DATABASE_URL` at your database, apply `db/*.sql` manually and in order against it, join your own external Docker network in place of `foundation_network`, and run `./scripts/build.sh && docker compose up -d`. `docker-compose.local.yml` is the same idea with host networking, to reach a local Ollama at `127.0.0.1:11434`:
 > ```bash
 > docker compose -f docker-compose.local.yml up -d --build
 > ```
 
-## Configuração
+## Configuration
 
-O comportamento do próprio ForgeRouter é ajustado por um conjunto pequeno de variáveis de ambiente; o registro de provedores/modelos/agentes vive no PostgreSQL e é gerenciado em tempo de execução pelo dashboard ou pelos endpoints `/admin/*` — o `.env` só precisa de credenciais, não do registro em si.
+ForgeRouter's own behavior is tuned by a small set of environment variables; the provider/model/agent registry lives in PostgreSQL and is managed at runtime through the dashboard or the `/admin/*` endpoints — `.env` only needs credentials, not the registry itself.
 
 ```bash
 cp .env.example .env
 ```
 
-| Variável | Obrigatória | Descrição |
+| Variable | Required | Description |
 |---|---:|---|
-| `DATABASE_URL` | Sim | String de conexão com o PostgreSQL |
-| `DATABASE_CONNECT_TIMEOUT` | Não | Timeout de conexão em segundos (padrão `5`) |
-| `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | Apenas no modo standalone | Credenciais do container Postgres embutido (`docker-compose.standalone.yml`) |
-| `PROXYROUTER_PASSWORD` | Apenas no modo standalone | Senha da role restrita `proxyrouter_user`, com a qual o serviço realmente se conecta ao banco |
-| `<PROVIDER>_API_KEY` (ex.: `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `GEMINI_API_KEY`) | Não | Chaves de API por provedor — apenas para os provedores habilitados, correspondendo ao `api_key_env` de cada um em `config/providers.yaml` |
-| `FORGEHUB_SSO_SECRET` | Não | Segredo compartilhado opcional para SSO confiável a partir de uma aplicação parceira (server-to-server) |
-| `AUTO_INCLUDE_MIN_HEALTHY` | Não | Mínimo de candidatos saudáveis antes que modelos degradados por falha em runtime (ex.: rate-limited) reentrem no roteamento como reserva de último caso (padrão `3`) |
-| `BREAKER_THRESHOLD` | Não | Falhas consecutivas de um provedor antes do circuit breaker em memória abrir (padrão `4`) |
-| `BREAKER_COOLDOWN_SECONDS` | Não | Tempo que um breaker aberto permanece assim antes de uma sondagem half-open (padrão `120`) |
-| `STICKY_TTL_SECONDS` | Não | Tempo que o último modelo bem-sucedido de um agente para uma demanda permanece "grudado" (padrão `600`) |
-| `ENABLE_PAID_FALLBACK` / `REDACT_SECRETS` / `LOG_PROMPTS` | Não | Flags de segurança/log em `.env.example` |
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `DATABASE_CONNECT_TIMEOUT` | No | Connection timeout in seconds (default `5`) |
+| `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | Standalone mode only | Credentials for the embedded Postgres container (`docker-compose.standalone.yml`) |
+| `PROXYROUTER_PASSWORD` | Standalone mode only | Password for the restricted `proxyrouter_user` role, which the service actually uses to connect to the database |
+| `<PROVIDER>_API_KEY` (e.g. `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `GEMINI_API_KEY`) | No | Per-provider API keys — only for enabled providers, matching each one's `api_key_env` in `config/providers.yaml` |
+| `FORGEHUB_SSO_SECRET` | No | Optional shared secret for trusted SSO from a partner application (server-to-server) |
+| `AUTO_INCLUDE_MIN_HEALTHY` | No | Minimum number of healthy candidates before models degraded by a runtime failure (e.g. rate-limited) re-enter routing as a last-resort reserve (default `3`) |
+| `BREAKER_THRESHOLD` | No | Consecutive failures from a provider before the in-memory circuit breaker opens (default `4`) |
+| `BREAKER_COOLDOWN_SECONDS` | No | How long an open breaker stays open before a half-open probe (default `120`) |
+| `STICKY_TTL_SECONDS` | No | How long an agent's last successful model for a demand stays "stuck" (default `600`) |
+| `ENABLE_PAID_FALLBACK` / `REDACT_SECRETS` / `LOG_PROMPTS` | No | Security/logging flags in `.env.example` |
 
-Tudo o mais — quais provedores estão habilitados, quais modelos eles expõem, cadeias de roteamento por demanda, compactação/truncamento de contexto, chaves e orçamentos de agentes, sincronização de pricing — é configurado ao vivo pelo dashboard e persistido no PostgreSQL, sem precisar de variável de ambiente ou redeploy.
+Everything else — which providers are enabled, which models they expose, demand-based routing chains, context compaction/truncation, agent keys and budgets, pricing sync — is configured live through the dashboard and persisted in PostgreSQL, with no need for an environment variable or redeploy.
 
-Autenticação com os provedores de assinatura OAuth (Claude Code, Codex, Antigravity, Z.ai, DeepSeek, xAI Grok) não usa `.env`: cada handler lê o token OAuth já mantido por sua respectiva CLI (`~/.codex`, `~/.gemini`, `~/.claude/.credentials.json`, `~/.zai`, `~/.deepseek`), exceto o xAI Grok, cujo login (`scripts/xai_oauth_login.py`) e refresh de token são realizados pelo próprio ForgeRouter (`~/.xai/auth.json`, montado com escrita). O Nous Portal é uma chave de API comum (`portal.nousresearch.com` → API Keys, requer crédito na conta), colada no dashboard como qualquer provedor por chave de API — sem arquivo montado, sem processo externo. Detalhes por provedor em `docs/SUBSCRIPTION_*_REFERENCE.md`.
+Authentication with the OAuth subscription providers (Claude Code, Codex, Antigravity, Z.ai, DeepSeek, xAI Grok) doesn't use `.env`: each handler reads the OAuth token already maintained by its respective CLI (`~/.codex`, `~/.gemini`, `~/.claude/.credentials.json`, `~/.zai`, `~/.deepseek`), except xAI Grok, whose login (`scripts/xai_oauth_login.py`) and token refresh are performed by ForgeRouter itself (`~/.xai/auth.json`, mounted with write access). Nous Portal is a plain API key (`portal.nousresearch.com` → API Keys, requires account credit), pasted into the dashboard like any API-key provider — no mounted file, no external process. Per-provider details in `docs/SUBSCRIPTION_*_REFERENCE.md`.
 
-### Provedores de Assinatura Local (OpenAI Codex, Claude Code e Google Antigravity)
+### Local Subscription Providers (OpenAI Codex, Claude Code and Google Antigravity)
 
-O ForgeRouter integra-se nativamente com as assinaturas de coding já autenticadas na máquina host, permitindo consumir as cotas dessas contas sem necessidade de cadastrar chaves de API pagas no dashboard:
+ForgeRouter integrates natively with coding subscriptions already authenticated on the host machine, allowing it to consume those accounts' quotas without needing to register paid API keys in the dashboard:
 
 1. **OpenAI Codex (`openai-codex`):**
-   - **Autenticação:** Requer que o CLI oficial do Codex (`codex`) esteja logado no host (`~/.codex/auth.json`).
-   - **Como ativar:** No dashboard do ForgeRouter, selecione o plano **OpenAI Codex**, deixe o campo de chave de API vazio (a autenticação é resolvida automaticamente pelo arquivo montado), clique em **"Detect models"** e salve.
-   - **Roteamento:** As chamadas são traduzidas para o protocolo de Responses do Codex (`chatgpt.com/backend-api/codex`).
+   - **Authentication:** Requires the official Codex CLI (`codex`) to be logged in on the host (`~/.codex/auth.json`).
+   - **How to enable:** In the ForgeRouter dashboard, select the **OpenAI Codex** plan, leave the API key field empty (authentication is resolved automatically from the mounted file), click **"Detect models"** and save.
+   - **Routing:** Calls are translated to Codex's Responses protocol (`chatgpt.com/backend-api/codex`).
 
 2. **Claude Code (`claude-code`):**
-   - **Autenticação:** Requer que o CLI oficial do Claude (`claude`) esteja autenticado no host (`~/.claude/.credentials.json`).
-   - **Como ativar:** No dashboard, selecione o plano **Claude Code**, deixe o campo de chave vazio, clique em **"Detect models"** e salve.
-   - **Roteamento:** As requisições são enviadas para a API de Mensagens da Anthropic (`api.anthropic.com/v1/messages`) utilizando os headers OAuth do Claude Code.
+   - **Authentication:** Requires the official Claude CLI (`claude`) to be authenticated on the host (`~/.claude/.credentials.json`).
+   - **How to enable:** In the dashboard, select the **Claude Code** plan, leave the key field empty, click **"Detect models"** and save.
+   - **Routing:** Requests are sent to the Anthropic Messages API (`api.anthropic.com/v1/messages`) using Claude Code's OAuth headers.
 
 3. **Google Antigravity (`google-antigravity`):**
-   - **Autenticação:** Requer que o CLI `agy` esteja logado na sua conta Google no host (`~/.gemini/antigravity-cli`).
-   - **Como ativar:** No dashboard, selecione **Google Antigravity**, deixe a chave em branco, clique em **"Detect models"** para listar os modelos disponíveis da sua conta (`gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.1-pro`, etc.) e salve.
-   - **Roteamento:** O ForgeRouter executa o binário `agy` diretamente via subprocesso dentro do container, transmitindo completions e streaming com suporte completo a contagem de tokens.
+   - **Authentication:** Requires the `agy` CLI to be logged into your Google account on the host (`~/.gemini/antigravity-cli`).
+   - **How to enable:** In the dashboard, select **Google Antigravity**, leave the key blank, click **"Detect models"** to list your account's available models (`gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.1-pro`, etc.) and save.
+   - **Routing:** ForgeRouter runs the `agy` binary directly via a subprocess inside the container, streaming completions with full token-counting support.
 
-#### Como o sistema mantém as contas e tokens sempre ativos (Keepalive)
+#### How the system keeps accounts and tokens always active (Keepalive)
 
-Tokens OAuth emitidos para CLIs locais possuem prazo de validade e expiram se os utilitários ficarem inativos por longos períodos:
+OAuth tokens issued to local CLIs have an expiration and lapse if the utilities stay idle for long periods:
 
-1. **Renovação por tráfego e Health Scan:** Sempre que uma requisição é roteada ou quando o cron do ForgeRouter executa o scan de saúde periódico (`scripts/health_scan_sync.py` a cada 10 minutos), as credenciais são exercitadas.
-2. **Script de Keepalive dedicado (`scripts/keepalive_subscriptions.sh`):** Para garantir que as contas nunca fiquem inativas mesmo sem tráfego de usuários, um cronjob no host executa verificações leves a cada 30 minutos:
-   - `codex doctor --summary`: valida diagnósticos e renova os tokens em `~/.codex/auth.json`.
-   - `claude -p "ping" --dangerously-skip-permissions`: realiza um ping não-interativo mantendo `~/.claude/.credentials.json` ativo.
-   - `agy models`: consulta o catálogo remoto do Google, renovando os tokens de sessão no keyring e em `~/.gemini/`.
-   - **Agendamento no Crontab do Host:**
+1. **Renewal through traffic and Health Scan:** Whenever a request is routed, or when ForgeRouter's cron runs the periodic health scan (`scripts/health_scan_sync.py` every 10 minutes), the credentials get exercised.
+2. **Dedicated Keepalive script (`scripts/keepalive_subscriptions.sh`):** To make sure accounts never go idle even without user traffic, a cronjob on the host runs lightweight checks every 30 minutes:
+   - `codex doctor --summary`: validates diagnostics and renews the tokens in `~/.codex/auth.json`.
+   - `claude -p "ping" --dangerously-skip-permissions`: performs a non-interactive ping keeping `~/.claude/.credentials.json` active.
+   - `agy models`: queries Google's remote catalog, renewing session tokens in the keyring and in `~/.gemini/`.
+   - **Host Crontab schedule:**
      ```bash
      */30 * * * * flock -n /tmp/subscription-keepalive.lock /root/project/forgerouter/scripts/keepalive_subscriptions.sh >> /var/log/subscription-keepalive.log 2>&1
      ```
 
-## Executando o Projeto
+## Running the Project
 
-### Docker (produção / uso normal)
+### Docker (production / normal use)
 
 ```bash
 docker compose up -d
 ```
 
-### Desenvolvimento local
+### Local development
 
 ```bash
-# Reconstrói o dashboard após mudanças no frontend, depois reconstrói a imagem
+# Rebuilds the dashboard after frontend changes, then rebuilds the image
 cd frontend && npm install && npm run build && cd .. && ./scripts/build.sh
 
-# Sobe com host networking, necessário para alcançar um Ollama local em 127.0.0.1:11434
+# Starts with host networking, required to reach a local Ollama at 127.0.0.1:11434
 docker compose -f docker-compose.local.yml up -d --build
 ```
 
-> Use sempre `./scripts/build.sh`, não `docker compose build` puro: ele grava o commit atual na imagem (exposto em `GET /health`) e retagueia o resultado como `forgerouter:<VERSION>` + `forgerouter:latest`, garantindo que os comandos `docker run` avulsos (scanner, cron) sempre rodem o código atual.
+> Always use `./scripts/build.sh`, not a plain `docker compose build`: it bakes the current commit into the image (exposed at `GET /health`) and retags the result as `forgerouter:<VERSION>` + `forgerouter:latest`, ensuring standalone `docker run` commands (scanner, cron) always run the current code.
 
-## Acesso à Aplicação
+## Application Access
 
-| Serviço | URL |
+| Service | URL |
 |---|---|
 | API / Dashboard | `http://127.0.0.1:2100` |
 | Health check | `http://127.0.0.1:2100/health` |
 
 ## API
 
-Base URL: `http://127.0.0.1:2100`. Autenticação nos endpoints `/v1/*` e nos endpoints administrativos de escrita é via `Authorization: Bearer <chave-do-agente>` (chave emitida por agente em `ai_router.agents`) ou sessão de dashboard — não existe uma chave mestra no ambiente. A proteção só é ativada automaticamente quando existe ao menos um agente habilitado; sem agentes (ou sem banco), a área admin fica aberta para a configuração inicial.
+Base URL: `http://127.0.0.1:2100`. Authentication on `/v1/*` endpoints and on write admin endpoints is via `Authorization: Bearer <agent-key>` (a key issued per agent in `ai_router.agents`) or a dashboard session — there is no master key in the environment. Protection only activates automatically once at least one agent is enabled; with no agents (or no database), the admin area stays open for initial setup.
 
-**Endpoints de roteamento (compatíveis com clientes):**
+**Routing endpoints (client-compatible):**
 
 ```http
 POST /v1/chat/completions
@@ -303,7 +303,7 @@ POST /v1/embeddings
 GET  /v1/models
 ```
 
-**Autenticação do dashboard:**
+**Dashboard authentication:**
 
 ```http
 POST /auth/login
@@ -313,11 +313,11 @@ POST /auth/change-password
 POST /auth/logout
 ```
 
-**Administração (leitura pública, escrita protegida por chave de agente/sessão)** — gestão de provedores (`/admin/providers/*`: registry, health, readiness, rescan, resync, discover-models, validate, CRUD), agentes (`/admin/agents/*`: criação, rotação/exibição de chave, duplicação, modelos permitidos, orçamento, deploy-config), roteamento por demanda (`/admin/demand-routes/*`), configurações de contexto (`/admin/settings/context-compaction`, `/admin/settings/context-truncation`), pricing (`/admin/pricing/*`) e uso (`/admin/usage/*`, `/admin/routes/recent`). O FastAPI expõe a documentação interativa padrão em `/docs` (Swagger UI) e `/openapi.json`; a superfície completa dos endpoints está em `app/main.py`.
+**Administration (public reads, writes protected by agent key/session)** — provider management (`/admin/providers/*`: registry, health, readiness, rescan, resync, discover-models, validate, CRUD), agents (`/admin/agents/*`: creation, key rotation/reveal, duplication, allowed models, budget, deploy-config), demand-based routing (`/admin/demand-routes/*`), context settings (`/admin/settings/context-compaction`, `/admin/settings/context-truncation`), pricing (`/admin/pricing/*`) and usage (`/admin/usage/*`, `/admin/routes/recent`). FastAPI exposes the standard interactive documentation at `/docs` (Swagger UI) and `/openapi.json`; the full endpoint surface is in `app/main.py`.
 
-## Banco de Dados
+## Database
 
-PostgreSQL, schema `ai_router`, gerenciado pelo ecossistema Foundation em deploys integrados ou por um container próprio no modo standalone. Não há ferramenta de migration — o schema fica em `db/*.sql`, arquivos numerados aplicados manualmente e em ordem:
+PostgreSQL, schema `ai_router`, managed by the Foundation ecosystem in integrated deployments or by its own container in standalone mode. There is no migration tool — the schema lives in `db/*.sql`, numbered files applied manually and in order:
 
 ```bash
 for f in db/*.sql; do
@@ -326,121 +326,121 @@ for f in db/*.sql; do
 done
 ```
 
-Tabelas principais: `providers`, `models`, `provider_health` (histórico append-only), `route_events` (uma linha por tentativa de provedor, com atribuição a agente), `usage_monthly` (rollup mensal por agente), `agents`, `agent_models`, `users` + `sessions` (login do dashboard), `subscription_catalog`, `settings`. Detalhes de decisão em [`docs/DATABASE_DECISION.md`](docs/DATABASE_DECISION.md).
+Main tables: `providers`, `models`, `provider_health` (append-only history), `route_events` (one row per provider attempt, with agent attribution), `usage_monthly` (monthly rollup per agent), `agents`, `agent_models`, `users` + `sessions` (dashboard login), `subscription_catalog`, `settings`. Design rationale in [`docs/DATABASE_DECISION.md`](docs/DATABASE_DECISION.md).
 
 ## Docker
 
-| Arquivo | Cenário |
+| File | Scenario |
 |---|---|
-| `docker-compose.yml` | Deploy integrado ao ecossistema Hermes/Foundation: rede Docker externa (`foundation_network`), PostgreSQL já provisionado, montagens para restart de agentes irmãos via systemd/D-Bus do host |
-| `docker-compose.local.yml` | Igual ao anterior, com `network_mode: host`, para alcançar um Ollama local em `127.0.0.1:11434` |
-| `docker-compose.standalone.yml` | Instalação autônoma: PostgreSQL embutido, sem dependência de rede externa nem dos mounts de systemd/D-Bus |
+| `docker-compose.yml` | Deploy integrated into the Hermes/Foundation ecosystem: external Docker network (`foundation_network`), already-provisioned PostgreSQL, mounts for restarting sibling agents via the host's systemd/D-Bus |
+| `docker-compose.local.yml` | Same as above, with `network_mode: host`, to reach a local Ollama at `127.0.0.1:11434` |
+| `docker-compose.standalone.yml` | Standalone installation: embedded PostgreSQL, no dependency on an external network or on systemd/D-Bus mounts |
 
-O único serviço da aplicação escuta na porta **2100**. Os três arquivos montam (leitura, exceto onde indicado) os arquivos de login OAuth de cada plano de assinatura (`~/.codex`, `~/.gemini`, `~/.claude/.credentials.json`, `~/.zai`, `~/.deepseek`, `~/.xai` — este com escrita, pois o próprio ForgeRouter renova o token) e os catálogos de pricing (`config/model_pricing*.json`, com escrita, para persistir o resultado de `POST /admin/pricing/sync`). O Nous Portal não precisa de nenhum mount — é uma chave de API paga como qualquer outra.
+The application's single service listens on port **2100**. All three files mount (read-only, except where noted) each subscription plan's OAuth login files (`~/.codex`, `~/.gemini`, `~/.claude/.credentials.json`, `~/.zai`, `~/.deepseek`, `~/.xai` — this one with write access, since ForgeRouter itself renews the token) and the pricing catalogs (`config/model_pricing*.json`, with write access, to persist the result of `POST /admin/pricing/sync`). Nous Portal needs no mount at all — it's a paid API key like any other.
 
-## Segurança
+## Security
 
-- **Sem chave mestra**: endpoints administrativos de escrita exigem a chave de um agente registrado ou uma sessão de dashboard válida; a proteção liga sozinha assim que existe um agente habilitado.
-- **Senhas com hash**: usuários do dashboard usam PBKDF2 (`ai_router.users`); sessões expiram em 7 dias.
-- **Nenhum segredo é exposto pela API**: os endpoints de readiness/registry retornam apenas nomes de variáveis de ambiente e um booleano de "configurado", nunca o valor da chave.
-- **Nenhuma conversa é persistida** por design — a única exceção é um preview de ~100 caracteres da última mensagem do usuário, para auditoria de uso de cota (`route_events.prompt_preview`).
-- **Falhas de banco nunca derrubam o roteamento**: toda chamada de persistência no caminho de requisição está protegida por try/except, com fallback para YAML quando o banco está indisponível.
-- Segredos reais (`.env`) nunca devem ser commitados; use `.env.example` como referência de formato.
+- **No master key**: write admin endpoints require the key of a registered agent or a valid dashboard session; protection turns on by itself as soon as an agent is enabled.
+- **Hashed passwords**: dashboard users use PBKDF2 (`ai_router.users`); sessions expire after 7 days.
+- **No secret is ever exposed by the API**: readiness/registry endpoints only return environment variable names and a "configured" boolean, never the key value.
+- **No conversation is persisted** by design — the one exception is a ~100-character preview of the last user message, for quota-usage auditing (`route_events.prompt_preview`).
+- **Database failures never bring down routing**: every persistence call in the request path is protected by try/except, with a fallback to YAML when the database is unavailable.
+- Real secrets (`.env`) must never be committed; use `.env.example` as the format reference.
 
-## Testes
+## Tests
 
 ```bash
-# Suíte completa
+# Full suite
 docker compose run --rm forgerouter pytest -q
 
-# Um arquivo ou teste específico
+# A specific file or test
 docker compose run --rm forgerouter pytest tests/test_chat_fallback.py -q
 docker compose run --rm forgerouter pytest tests/test_chat_fallback.py::test_chat_falls_back_to_next_candidate -q
 ```
 
-A suíte (40 arquivos em `tests/`) usa o `TestClient` do FastAPI e faz monkeypatch das funções importadas em `app.main` (registro, chat, persistência) — nenhum banco de dados ou provedor real é necessário para rodá-la. Um fixture `autouse` em `tests/conftest.py` reseta o estado de roteamento em memória (circuit breaker, sticky routing) entre os testes.
+The suite (40 files in `tests/`) uses FastAPI's `TestClient` and monkeypatches the functions imported into `app.main` (registry, chat, persistence) — no real database or provider is required to run it. An `autouse` fixture in `tests/conftest.py` resets the in-memory routing state (circuit breaker, sticky routing) between tests.
 
 ## Deploy
 
-Não há pipeline de CI/CD (GitHub Actions ou similar) neste repositório — build e deploy são manuais via `./scripts/build.sh` e `docker compose up -d`, com o commit atual gravado na imagem e exposto em `GET /health` para conferência contra `docker images` ou `git rev-parse HEAD`. Rotinas de cron sugeridas (scan de saúde em lote e sincronização de pricing) estão documentadas nos próprios scripts:
+There is no CI/CD pipeline (GitHub Actions or similar) in this repository — build and deploy are manual via `./scripts/build.sh` and `docker compose up -d`, with the current commit baked into the image and exposed at `GET /health` for verification against `docker images` or `git rev-parse HEAD`. Suggested cron routines (batch health scan and pricing sync) are documented in the scripts themselves:
 
 ```bash
-# Scan de saúde por lote (percentual do pool por execução, para cron)
+# Batch health scan (percentage of the pool per run, for cron)
 docker run --rm --network foundation_network --add-host=host.docker.internal:host-gateway \
   --env-file .env -e PYTHONPATH=/app forgerouter:latest python3 scripts/health_scan_sync.py --percent 20
 
-# Sincronização de pricing de referência (catálogo + pricing ao vivo + backfill histórico)
+# Reference pricing sync (catalog + live pricing + historical backfill)
 docker run --rm --network foundation_network --add-host=host.docker.internal:host-gateway \
   --env-file .env -e PYTHONPATH=/app forgerouter:latest python3 scripts/sync_pricing.py
 ```
 
-## Observabilidade
+## Observability
 
-- **`GET /health`** — status, versão e `git_sha` da imagem em execução.
-- **`GET /admin/providers/health`** e **`/admin/routes/recent`** — histórico de saúde por modelo e últimas tentativas de roteamento.
-- **`GET /admin/usage`** e **`/admin/usage/yearly[-by-demand]`** — uso agregado por agente/ano/mês, incluindo tokens economizados pela compactação de contexto.
-- Scanner de saúde com watchdog em segundo plano (`app/health_watchdog.py`) dispara rescans automáticos quando o pool saudável cai abaixo do mínimo configurado.
+- **`GET /health`** — status, version and `git_sha` of the running image.
+- **`GET /admin/providers/health`** and **`/admin/routes/recent`** — per-model health history and recent routing attempts.
+- **`GET /admin/usage`** and **`/admin/usage/yearly[-by-demand]`** — aggregated usage per agent/year/month, including tokens saved by context compaction.
+- Health scanner with background watchdog (`app/health_watchdog.py`) triggers automatic rescans when the healthy pool drops below the configured minimum.
 
-## Documentação Adicional
+## Additional Documentation
 
-- [`INSTALL.md`](INSTALL.md) — guia de instalação standalone, passo a passo manual e notas de backup.
-- [`CLAUDE.md`](CLAUDE.md) — guia de arquitetura e convenções para desenvolvimento/agentes neste repositório.
-- [`docs/DATABASE_DECISION.md`](docs/DATABASE_DECISION.md) — racional da escolha de PostgreSQL gerenciado pelo Foundation.
-- [`docs/HERMES_AI_PROXY_ROUTER_PRD_v2.md`](docs/HERMES_AI_PROXY_ROUTER_PRD_v2.md) — PRD do produto.
-- `docs/SUBSCRIPTION_ZAI_REFERENCE.md`, `docs/SUBSCRIPTION_DEEPSEEK_REFERENCE.md`, `docs/SUBSCRIPTION_XAI_GROK_REFERENCE.md`, `docs/SUBSCRIPTION_NOUS_PORTAL_REFERENCE.md` — referência de autenticação de cada plano de assinatura.
+- [`INSTALL.md`](INSTALL.md) — standalone installation guide, manual step-by-step and backup notes.
+- [`CLAUDE.md`](CLAUDE.md) — architecture and convention guide for development/agents in this repository.
+- [`docs/DATABASE_DECISION.md`](docs/DATABASE_DECISION.md) — rationale for choosing Foundation-managed PostgreSQL.
+- [`docs/HERMES_AI_PROXY_ROUTER_PRD_v2.md`](docs/HERMES_AI_PROXY_ROUTER_PRD_v2.md) — product PRD.
+- `docs/SUBSCRIPTION_ZAI_REFERENCE.md`, `docs/SUBSCRIPTION_DEEPSEEK_REFERENCE.md`, `docs/SUBSCRIPTION_XAI_GROK_REFERENCE.md`, `docs/SUBSCRIPTION_NOUS_PORTAL_REFERENCE.md` — authentication reference for each subscription plan.
 
-## Uso
+## Usage
 
 ```bash
 curl http://127.0.0.1:2100/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <chave-do-agente>" \
+  -H "Authorization: Bearer <agent-key>" \
   -d '{
     "model": "forgerouter/auto",
-    "messages": [{"role": "user", "content": "Olá!"}]
+    "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
 
-Pedindo uma classe de demanda específica em vez da classificação automática:
+Requesting a specific demand class instead of automatic classification:
 
 ```bash
 curl http://127.0.0.1:2100/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <chave-do-agente>" \
-  -d '{"model": "forgerouter/code", "messages": [{"role": "user", "content": "Escreva um bubble sort em Rust"}]}'
+  -H "Authorization: Bearer <agent-key>" \
+  -d '{"model": "forgerouter/code", "messages": [{"role": "user", "content": "Write a bubble sort in Rust"}]}'
 ```
 
-Listando os modelos disponíveis:
+Listing the available models:
 
 ```bash
 curl http://127.0.0.1:2100/v1/models
 ```
 
-Requisitando um embedding:
+Requesting an embedding:
 
 ```bash
 curl http://127.0.0.1:2100/v1/embeddings \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <chave-do-agente>" \
-  -d '{"model": "auto", "input": "Olá, mundo!"}'
+  -H "Authorization: Bearer <agent-key>" \
+  -d '{"model": "auto", "input": "Hello, world!"}'
 ```
 
-Qualquer SDK compatível com OpenAI funciona apontando `base_url` para `http://127.0.0.1:2100/v1`. O Claude Code e a Codex CLI podem apontar diretamente para `http://127.0.0.1:2100` (`/v1/messages` e `/v1/responses`, respectivamente), usando a chave de API de um agente como bearer token.
+Any OpenAI-compatible SDK works by pointing `base_url` at `http://127.0.0.1:2100/v1`. Claude Code and the Codex CLI can point directly at `http://127.0.0.1:2100` (`/v1/messages` and `/v1/responses`, respectively), using an agent's API key as the bearer token.
 
-## Contribuição
+## Contributing
 
-Não há um `CONTRIBUTING.md` neste repositório. Ao propor mudanças, siga as convenções já documentadas em [`CLAUDE.md`](CLAUDE.md) (padrões de teste, regras de design do roteamento) e rode a suíte de testes antes de abrir uma alteração:
+There is no `CONTRIBUTING.md` in this repository. When proposing changes, follow the conventions already documented in [`CLAUDE.md`](CLAUDE.md) (testing standards, routing design rules) and run the test suite before opening a change:
 
 ```bash
-git checkout -b feature/nome-da-funcionalidade
+git checkout -b feature/feature-name
 docker compose run --rm forgerouter pytest -q
 git commit -m "feat: descrição"
 ```
 
-## Licença
+## License
 
-Este projeto está licenciado sob a [Mozilla Public License 2.0](LICENSE).
+This project is licensed under the [Mozilla Public License 2.0](LICENSE).
 
-## Autor
+## Author
 
 Marcelo D. Ferreira ([marcelodarckferreira](https://github.com/marcelodarckferreira)).

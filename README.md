@@ -182,8 +182,8 @@ forgerouter/
 **Running ForgeRouter standalone?** Use the standalone installer — it bundles its own PostgreSQL container, so there's nothing to provision beforehand:
 
 ```bash
-git clone https://github.com/marcelodarckferreira/ForgeRouter.git
-cd ForgeRouter
+git clone https://github.com/darckware/forgerouter.git
+cd forgerouter
 ./scripts/install_standalone.sh
 ```
 

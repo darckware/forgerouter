@@ -48,7 +48,7 @@ def test_agents_list_includes_profile_image_for_dashboard_session(monkeypatch):
 
 def test_agent_create_requires_admin_token(monkeypatch):
     monkeypatch.setattr("app.main.has_any_agent", lambda: True)
-    monkeypatch.setattr("app.main.find_agent_by_key", lambda key: "tester" if key == "sekret" else None)
+    monkeypatch.setattr("app.main.find_agent_by_key", lambda key: "Athos" if key == "sekret" else None)
 
     response = client.post("/admin/agents", json={"name": "athos"})
 
@@ -138,7 +138,7 @@ def test_agent_profile_image_can_be_updated_and_removed(monkeypatch):
 
 def test_agent_key_reveal_requires_admin_token(monkeypatch):
     monkeypatch.setattr("app.main.has_any_agent", lambda: True)
-    monkeypatch.setattr("app.main.find_agent_by_key", lambda key: "tester" if key == "sekret" else None)
+    monkeypatch.setattr("app.main.find_agent_by_key", lambda key: "Athos" if key == "sekret" else None)
     monkeypatch.setattr("app.main.get_agent_api_key", lambda name: "hermes_supersecretvalue")
 
     denied = client.get("/admin/agents/athos/key")
@@ -147,6 +147,21 @@ def test_agent_key_reveal_requires_admin_token(monkeypatch):
     assert denied.status_code == 401
     assert allowed.status_code == 200
     assert allowed.json()["api_key"] == "hermes_supersecretvalue"
+
+
+def test_non_admin_agent_key_cannot_reveal_keys(monkeypatch):
+    """2026-09-28: any agent's key used to be an admin credential -- a customer-facing agent
+    could read every other agent's key. Only allow-listed admin agents (and sessions) now."""
+    monkeypatch.delenv("FORGEROUTER_ADMIN_AGENTS", raising=False)
+    monkeypatch.setattr("app.main.has_any_agent", lambda: True)
+    monkeypatch.setattr("app.main.session_user", lambda token: None)
+    monkeypatch.setattr("app.main.find_agent_by_key", lambda key: "Lara" if key == "lara-key" else None)
+    monkeypatch.setattr("app.main.get_agent_api_key", lambda name: "hermes_supersecretvalue")
+
+    refused = client.get("/admin/agents/athos/key", headers={"Authorization": "Bearer lara-key"})
+
+    assert refused.status_code == 403
+    assert "hermes_supersecretvalue" not in refused.text
 
 
 def test_agent_rotate_key_keeps_identity(monkeypatch):

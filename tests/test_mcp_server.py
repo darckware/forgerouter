@@ -63,7 +63,8 @@ def test_authorize_accepts_valid_dashboard_session(monkeypatch):
 def test_every_tool_rejects_a_missing_bearer_token(tool, monkeypatch):
     monkeypatch.setattr("app.mcp_server._authorize", lambda token: False)
     kwargs = {"name": "whoever"} if tool.__name__ == "delete_agent" else {}
-    with pytest.raises(ToolError, match="Bearer token"):
+    # delete_agent is an admin tool (2026-09-28): its refusal names the admin allow-list.
+    with pytest.raises(ToolError, match="Bearer token|admin agents"):
         tool(FakeContext(token=None), **kwargs)
 
 
@@ -163,7 +164,7 @@ def test_settings_overview_combines_all_three_toggles(monkeypatch):
 
 
 def test_delete_agent_without_confirm_reports_target_and_makes_no_change(monkeypatch):
-    monkeypatch.setattr("app.mcp_server._authorize", lambda token: True)
+    monkeypatch.setattr("app.admin_policy.is_admin_token", lambda token: True)
     monkeypatch.setattr(
         "app.storage.list_agents_with_usage",
         lambda days: [{"name": "Athos", "kind": "agent", "description": "Chief of Staff"}],
@@ -179,7 +180,7 @@ def test_delete_agent_without_confirm_reports_target_and_makes_no_change(monkeyp
 
 
 def test_delete_agent_with_confirm_actually_deletes(monkeypatch):
-    monkeypatch.setattr("app.mcp_server._authorize", lambda token: True)
+    monkeypatch.setattr("app.admin_policy.is_admin_token", lambda token: True)
     deleted = {}
     monkeypatch.setattr("app.storage.delete_agent", lambda name: deleted.setdefault("called", name) or True)
 
@@ -190,7 +191,7 @@ def test_delete_agent_with_confirm_actually_deletes(monkeypatch):
 
 
 def test_delete_agent_reports_not_found_without_deleting(monkeypatch):
-    monkeypatch.setattr("app.mcp_server._authorize", lambda token: True)
+    monkeypatch.setattr("app.admin_policy.is_admin_token", lambda token: True)
     monkeypatch.setattr("app.storage.delete_agent", lambda name: False)
 
     result = delete_agent(FakeContext(), name="Ghost", confirm=True)
@@ -291,3 +292,12 @@ def test_mcp_mount_serves_a_real_streamable_http_request():
     assert response.status_code == 200
     assert '"serverInfo"' in response.text
     assert "forgerouter" in response.text
+
+
+def test_delete_agent_refuses_a_non_admin_agent(monkeypatch):
+    monkeypatch.setattr("app.admin_policy.is_admin_token", lambda token: False)
+    deleted = {}
+    monkeypatch.setattr("app.storage.delete_agent", lambda name: deleted.setdefault("called", name) or True)
+    with pytest.raises(ToolError, match="admin agents"):
+        delete_agent(FakeContext(), name="Athos", confirm=True)
+    assert "called" not in deleted

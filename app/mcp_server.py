@@ -29,9 +29,11 @@ from app.routing_state import model_performance_cached
 mcp_server = MCPServer(
     name="forgerouter",
     instructions=(
-        "Read-only inspection of ForgeRouter's providers, models and agents. "
-        "Requires the same Bearer token (agent API key or dashboard session) "
-        "as ForgeRouter's own /admin/* API — no separate credential."
+        "Inspection of ForgeRouter's providers, models and agents (any agent key), "
+        "plus administration -- add/remove providers, discover and validate models, "
+        "run the health scan and resync, sync pricing -- for admin agents only "
+        "(FORGEROUTER_ADMIN_AGENTS, default Athos and Hephaestus) or a dashboard "
+        "session. Bearer token = the caller's own ForgeRouter API key; no separate credential."
     ),
 )
 
@@ -50,6 +52,24 @@ def _authorize(token: str) -> bool:
         return bool(find_agent_by_key(token))
     except Exception:
         return False
+
+
+def _bearer(ctx: Context) -> str:
+    headers = ctx.headers or {}
+    authorization = headers.get("authorization") or headers.get("Authorization") or ""
+    return authorization[len("Bearer "):].strip() if authorization.startswith("Bearer ") else ""
+
+
+def _require_admin(ctx: Context) -> None:
+    """Write tools: a dashboard session or an allow-listed admin agent
+    (app/admin_policy.py) -- the same rule as require_admin() for /admin/*."""
+    from app.admin_policy import admin_agent_names, is_admin_token
+
+    if not is_admin_token(_bearer(ctx)):
+        raise ToolError(
+            "This tool changes ForgeRouter and is limited to admin agents "
+            f"({', '.join(sorted(admin_agent_names())) or 'none configured'}) or a dashboard session."
+        )
 
 
 def _require_agent(ctx: Context) -> None:
@@ -237,8 +257,8 @@ def delete_agent(ctx: Context, name: str, confirm: bool = False) -> dict[str, An
     tool on this otherwise read-only surface — call it once with confirm
     left False to see who you're about to delete, then again with
     confirm=True to actually do it. Same effect as
-    DELETE /admin/agents/{name}."""
-    _require_agent(ctx)
+    DELETE /admin/agents/{name}. Admin agents only."""
+    _require_admin(ctx)
     from app.storage import delete_agent as _delete_agent
     from app.storage import list_agents_with_usage
 
@@ -328,3 +348,191 @@ def settings_overview(ctx: Context) -> dict[str, Any]:
     except Exception:
         response_cache = {"enabled": False, "ttl_seconds": 300}
     return {"context_compaction": compaction, "context_truncation": truncation, "response_cache": response_cache}
+
+
+# --- Administration tools (2026-09-28) --------------------------------------------------------
+#
+# Marcelo: an MCP to administer ForgeRouter -- add a provider, ask for the model scan -- not to
+# consume LLMs. Each tool calls the very same /admin/* handler function the dashboard uses (no
+# second implementation of the logic, and require_admin() runs again inside it), with a request
+# carrying the caller's own token. Not an HTTP loopback: this app runs one uvicorn worker, and a
+# request to itself from inside a request could deadlock. The handlers are synchronous and a scan
+# can take minutes, so they run on a worker thread to keep the event loop free.
+#
+# Provider API keys never travel through MCP: `add_provider` takes only the NAME of the
+# environment variable holding the key (api_key_env); the value goes in ForgeRouter's .env.
+
+
+def _admin_request(ctx: Context):
+    from starlette.requests import Request
+
+    token = _bearer(ctx)
+    return Request({
+        "type": "http", "method": "POST", "path": "/mcp", "query_string": b"",
+        "headers": [(b"authorization", f"Bearer {token}".encode())],
+    })
+
+
+def _unwrap(result: Any) -> dict[str, Any]:
+    from fastapi.responses import JSONResponse
+    import json as _json
+
+    if isinstance(result, JSONResponse):
+        try:
+            body = _json.loads(result.body)
+            message = (body.get("error") or {}).get("message") or body
+        except Exception:
+            message = result.body.decode(errors="replace")[:500]
+        raise ToolError(f"ForgeRouter refused ({result.status_code}): {message}")
+    return result
+
+
+async def _run_admin(ctx: Context, handler_name: str, *args: Any) -> dict[str, Any]:
+    import anyio
+    import app.main as main
+
+    _require_admin(ctx)
+    request = _admin_request(ctx)
+    handler = getattr(main, handler_name)
+    result = await anyio.to_thread.run_sync(lambda: handler(*args, request=request))
+    return _unwrap(result)
+
+
+@mcp_server.tool()
+async def discover_provider_models(
+    ctx: Context,
+    provider_name: str = "",
+    base_url: str = "",
+    api_key_env: str = "",
+    api_format: str = "",
+    scan: bool = True,
+) -> dict[str, Any]:
+    """Discover the models a provider serves (and, with scan=True, health-check the free ones)
+    without saving anything. For a stored provider pass provider_name; for a new one pass
+    base_url + api_key_env (the NAME of the env var holding its key) + api_format
+    (openai | anthropic). Same as POST /admin/providers/discover-models. Admin agents only."""
+    import app.main as main
+
+    payload = main.DiscoverModelsPayload(
+        provider_name=provider_name.strip(), base_url=base_url.strip(),
+        api_key_env=api_key_env.strip(), api_format=api_format.strip(), scan=scan,
+    )
+    return await _run_admin(ctx, "admin_provider_discover_models", payload)
+
+
+@mcp_server.tool()
+async def add_provider(
+    ctx: Context,
+    name: str,
+    base_url: str,
+    api_key_env: str = "",
+    tier: int = 2,
+    access_type: str = "api_key",
+    cost_type: str = "free",
+    api_format: str = "openai",
+    only_healthy: bool = True,
+) -> dict[str, Any]:
+    """Register (or update) a provider: discovers its models, keeps the healthy ones enabled
+    (all of them with only_healthy=False), saves it and syncs the agents' model lists.
+    The key is never passed here -- put it in ForgeRouter's .env under `api_key_env` first
+    (access_type=local needs none). access_type: api_key | subscription | local;
+    cost_type: free | paid; api_format: openai | anthropic.
+    Same as the dashboard's detect + save (discover-models, then PUT /admin/providers/{name}).
+    Admin agents only."""
+    import os
+    import app.main as main
+
+    _require_admin(ctx)  # before anything else -- a non-admin must not learn which env vars exist
+    name = name.strip()
+    api_key_env = api_key_env.strip()
+    if not name or not base_url.strip():
+        raise ToolError("name and base_url are required")
+    if access_type != "local" and not api_key_env:
+        raise ToolError("api_key_env is required (the NAME of the env var in ForgeRouter's .env holding the key)")
+    if api_key_env and not os.environ.get(api_key_env):
+        raise ToolError(
+            f"{api_key_env} is not set in ForgeRouter's environment -- add it to ForgeRouter's .env "
+            "and recreate the container, then call add_provider again"
+        )
+    discovered = await _run_admin(
+        ctx, "admin_provider_discover_models",
+        main.DiscoverModelsPayload(base_url=base_url.strip(), api_key_env=api_key_env, api_format=api_format, scan=True),
+    )
+    models = []
+    for model in discovered.get("models") or []:
+        healthy = (model.get("health") or {}).get("status") == "healthy"
+        models.append(main.ProviderModelPayload(
+            id=f"{name}/{model['id']}", provider_model=model["id"],
+            capabilities=model.get("capabilities") or ["text"],
+            enabled=healthy or not only_healthy, health=model.get("health"),
+        ))
+    if not models:
+        raise ToolError(f"No models discovered at {base_url} -- nothing to register")
+    payload = main.ProviderPayload(
+        name=name, tier=tier, base_url=base_url.strip(), api_key_env=api_key_env,
+        access_type=access_type, cost_type=cost_type, api_format=api_format, models=models,
+    )
+    saved = await _run_admin(ctx, "admin_provider_upsert", name, payload)
+    return {
+        "provider": name,
+        "saved": saved,
+        "models": len(models),
+        "enabled_models": sum(1 for m in models if m.enabled),
+        "discovery": {k: discovered.get(k) for k in ("total", "healthy", "excluded_paid")},
+    }
+
+
+@mcp_server.tool()
+async def validate_provider(ctx: Context, name: str) -> dict[str, Any]:
+    """Validate a stored provider: credential check plus a real chat completion against each
+    enabled model; persists the health results. Same as POST /admin/providers/{name}/validate.
+    Admin agents only."""
+    return await _run_admin(ctx, "admin_provider_validate", name.strip())
+
+
+@mcp_server.tool()
+async def rescan_providers(ctx: Context) -> dict[str, Any]:
+    """Run the LLM health scan across every registered model, switch unhealthy models off (and
+    recovered ones back on) and resync the agents' model lists. Can take minutes. Same as
+    POST /admin/providers/rescan. Admin agents only."""
+    return await _run_admin(ctx, "admin_provider_rescan")
+
+
+@mcp_server.tool()
+async def resync_providers(ctx: Context) -> dict[str, Any]:
+    """Full sync: re-discover, catalog and health-scan the free models of every enabled provider
+    (new models appear, dead ones go). Slower than rescan_providers. Same as
+    POST /admin/providers/resync. Admin agents only."""
+    return await _run_admin(ctx, "admin_provider_resync")
+
+
+@mcp_server.tool()
+async def sync_pricing(ctx: Context) -> dict[str, Any]:
+    """Refresh the model price catalog and every provider's pricing. Same as
+    POST /admin/pricing/sync. Admin agents only."""
+    return await _run_admin(ctx, "admin_pricing_sync")
+
+
+@mcp_server.tool()
+async def remove_provider(ctx: Context, name: str, confirm: bool = False) -> dict[str, Any]:
+    """Permanently remove a provider and its models (agents lose those models). Call once with
+    confirm left False to see what would go, then again with confirm=True. Same as
+    DELETE /admin/providers/{name}. Admin agents only."""
+    _require_admin(ctx)
+    name = name.strip()
+    if not confirm:
+        from app.registry import load_registry_with_db_health
+
+        try:
+            registry = load_registry_with_db_health()
+            models = [m.id for m in registry.models if m.provider == name]
+        except Exception:
+            models = []
+        return {
+            "status": "confirm_required",
+            "provider": name,
+            "models": models,
+            "message": f"This permanently removes provider {name!r} and its {len(models)} model(s). "
+                       "Call remove_provider again with confirm=True to proceed.",
+        }
+    return await _run_admin(ctx, "admin_provider_delete", name)

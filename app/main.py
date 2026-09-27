@@ -1908,11 +1908,16 @@ def responses_endpoint(request: ResponsesRequest, raw_request: Request):
 
 
 def require_admin(request: Request) -> JSONResponse | None:
-    """Admin actions are authorized by a logged-in dashboard session or by any
-    registered agent's API key (each agent carries its own AGENTE_API_KEY in
-    ai_router.agents — there is no master key in the environment). While no
-    agent exists yet (or the DB is unreachable), admin stays open so the
-    first-time setup can register one."""
+    """Admin actions are authorized by a logged-in dashboard session or by the
+    API key of an agent in the admin allow-list (app/admin_policy.py --
+    FORGEROUTER_ADMIN_AGENTS, default Athos and Hephaestus). Until 2026-09-28
+    any registered agent's key was accepted here, so every agent (customer-
+    facing ones included) could manage providers/agents and read provider keys.
+    A valid key of a non-admin agent now gets 403. While no agent exists yet
+    (or the DB is unreachable), admin stays open so the first-time setup can
+    register one."""
+    from app.admin_policy import is_admin_agent
+
     token = bearer_token(request)
     if token:
         try:
@@ -1921,10 +1926,16 @@ def require_admin(request: Request) -> JSONResponse | None:
         except Exception:
             pass
         try:
-            if find_agent_by_key(token):
-                return None
+            agent_name = find_agent_by_key(token)
         except Exception:
-            pass
+            agent_name = None
+        if is_admin_agent(agent_name):
+            return None
+        if agent_name:
+            return JSONResponse(
+                status_code=403,
+                content={"error": {"message": f"Agent '{agent_name}' is not a ForgeRouter admin", "type": "forbidden"}},
+            )
     try:
         protected = has_any_agent()
     except Exception:

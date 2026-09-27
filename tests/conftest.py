@@ -48,3 +48,11 @@ def _reset_rate_ledger():
 
     reset_ledger()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _admin_agents_for_tests(monkeypatch):
+    """Since 2026-09-28 only allow-listed agents are ForgeRouter admins (app/admin_policy.py).
+    The existing admin-endpoint tests use a fictitious "tester" agent as their admin; keep it
+    admin here instead of rewriting each test. Tests of the policy itself override this."""
+    monkeypatch.setenv("FORGEROUTER_ADMIN_AGENTS", "Athos,Hephaestus,tester")

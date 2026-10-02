@@ -7,7 +7,7 @@ import { Activity, AlertTriangle, ArrowLeft, AudioLines, Ban, Bot, Boxes, Brain,
 import './style.css';
 import { selectedSubscriptionPlan, selectedSubscriptionPlanName, subscriptionPlanAuthUrl } from './subscriptionPlans';
 import { modelIdsForCostClass, allModelIdsForCostClass, nextAgentModelsForToggle, type CostClass } from './agentModelGroups';
-import { hermesAgentConfig } from './agentClientConfigs';
+import { agentClientBaseUrl, hermesAgentConfig } from './agentClientConfigs';
 
 type ProviderHealth = { provider: string; model_id: string; tier: number; status: string; http_code: number | null; latency_ms: number | null; error_message: string | null; checked_at: string | null; };
 type RouteEvent = { route_id: number; request_id: string; model_id: string | null; required_capability: string; status: string; error_type: string | null; created_at: string | null; total_tokens: number | null; cost: number; reference_cost: number | null; agent: string | null; demand: string | null; prompt_preview: string | null; messages_dropped: number | null; context_window: number | null; context_budget: number | null; context_action: 'none' | 'summarized' | 'truncated' | 'rejected' | null; context_candidates_skipped: number; };
@@ -2333,12 +2333,8 @@ function App() {
     }
   }
 
-  function agentClientBaseUrl(client: AgentClientDef): string {
-    return client.baseUrlKind === 'root' ? window.location.origin : `${window.location.origin}/v1`;
-  }
-
   async function copyAgentClientBlock(name: string, client: AgentClientDef) {
-    const baseUrl = agentClientBaseUrl(client);
+    const baseUrl = agentClientBaseUrl(client.baseUrlKind);
     if (!client.embedsSecret) {
       setScanStatus((await copyText(client.block(baseUrl, ''))) ? `${client.label} config copied` : 'copy failed');
       return;
@@ -3021,7 +3017,7 @@ function App() {
                 </div>
                 <div className="agentClients">
                   <div className="agentClientsHeader">
-                    <h3>Connect a coding tool <span className="muted">— ready-to-paste config for the base URL and key above, in each tool's own file format</span></h3>
+                    <h3>Connect a coding tool <span className="muted">— ready-to-paste config for tools on this host, using localhost:2100 and the agent key</span></h3>
                     <div className="agentClientTabs">
                       {AGENT_CLIENTS.map((client) => (
                         <button
@@ -3035,7 +3031,7 @@ function App() {
                   </div>
                   {(() => {
                     const client = AGENT_CLIENTS.find((item) => item.id === agentClientId) ?? AGENT_CLIENTS[0];
-                    const baseUrl = agentClientBaseUrl(client);
+                    const baseUrl = agentClientBaseUrl(client.baseUrlKind);
                     const displayKey = '<KEY AGENT>';
                     return (
                       <div className="agentClientBody">

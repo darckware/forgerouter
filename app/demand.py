@@ -170,12 +170,26 @@ def messages_have_audio(messages: list[Any]) -> bool:
 CODE_HINT_SCAN_CHARS = 2_000
 
 
+# A hint right after a negation is a prohibition, not a request: ForgeHub's routine policy
+# ("Não implemente fora do seu escopo sem aprovação") rides on every routine prompt and sent
+# Athos/Aegis/Kairos/Hephaestus routines to a code-only model (2026-10-12: 619 calls in a week;
+# Athos's daily retrospective answered with an invented MCP-validation task).
+_NEGATION_RE = re.compile(r"\b(?:não|nao|nunca|jamais|sem|never|don't|dont|do not|not)\s+$")
+
+
+def _has_code_hint(lowered: str) -> bool:
+    return any(
+        not _NEGATION_RE.search(lowered[max(0, match.start() - 12):match.start()])
+        for match in _CODE_HINTS_RE.finditer(lowered)
+    )
+
+
 def _looks_like_code(text: str, lowered: str) -> bool:
     text = text[:CODE_HINT_SCAN_CHARS]
     lowered = lowered[:CODE_HINT_SCAN_CHARS]
     if "```" in text:
         return True
-    return bool(_CODE_HINTS_RE.search(lowered) or _FILE_EXT_RE.search(lowered))
+    return bool(_has_code_hint(lowered) or _FILE_EXT_RE.search(lowered))
 
 
 def classify_request(messages: list[Any], has_tools: bool) -> str:

@@ -50,6 +50,16 @@ def test_classify_request_detects_code():
     assert classify_request([msg("me explique o que é uma API")], has_tools=False) == "simple"
 
 
+def test_negated_code_hint_is_not_a_code_request():
+    # ForgeHub's routine policy forbids implementing out of scope; that sentence must not make
+    # every routine a code request (it sent Athos's retrospective to a code-only model).
+    routine = "Leia as métricas do dia e proponha melhorias.\n- Não implemente fora do seu escopo sem aprovação."
+    assert classify_request([msg(routine)], has_tools=True) == "standard"
+    assert classify_request([msg("do not implement anything, just review the plan")], has_tools=False) != "code"
+    # A real request still is code, also when a negation appears elsewhere in the text.
+    assert classify_request([msg("não mexa no banco; implemente o endpoint novo")], has_tools=True) == "code"
+
+
 def test_classify_request_strips_context_compression_and_task_lists():
     user_with_task_list = (
         "[Your active task list was preserved across context compression]\n"

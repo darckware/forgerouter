@@ -135,6 +135,72 @@ def test_count_tokens_leaves_plain_string_content_unaffected():
     assert tokens > 0
 
 
+def test_count_tokens_generic_safety_net_catches_an_unrecognized_modality():
+    # A part type ForgeRouter has never explicitly wired up (video, here) —
+    # unlike image_url/input_audio, this falls through the generic
+    # _strip_inline_media safety net rather than a dedicated branch. Must
+    # get the same protection: a huge embedded payload must not blow up the
+    # count just because nothing named "video" was anticipated.
+    huge_base64 = "B" * 500_000
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "summarize this clip"},
+            {"type": "video_url", "video_url": {"url": f"data:video/mp4;base64,{huge_base64}"}},
+        ],
+    }]
+
+    tokens = count_tokens(messages)
+
+    if tokens is None:
+        return  # tiktoken encoding unavailable in this environment — degrade gracefully
+    assert tokens < 2_000
+
+
+def test_count_tokens_generic_safety_net_catches_a_data_field_regardless_of_type_name():
+    # Same idea via a different provider convention: no data: URI prefix,
+    # just a long payload under a field literally named "data" — the kind
+    # Gemini-style inline_data/file_data blobs use.
+    huge_base64 = "C" * 500_000
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "file", "file": {"data": huge_base64, "mime_type": "video/mp4"}},
+        ],
+    }]
+
+    tokens = count_tokens(messages)
+
+    if tokens is None:
+        return  # tiktoken encoding unavailable in this environment — degrade gracefully
+    assert tokens < 2_000
+
+
+def test_count_tokens_generic_safety_net_leaves_ordinary_long_text_alone():
+    # The safety net must not accidentally swallow real (non-media) long
+    # text under a part type it doesn't recognize — only data: URIs and the
+    # specific known blob-field names trigger it.
+    long_text = "word " * 2_000
+    messages = [{"role": "user", "content": [{"type": "text", "text": long_text}]}]
+
+    tokens = count_tokens(messages)
+
+    if tokens is None:
+        return  # tiktoken encoding unavailable in this environment — degrade gracefully
+    assert tokens > 1_000  # the real text was actually tokenized, not replaced by a flat estimate
+
+
+def test_count_tokens_keeps_long_prose_in_a_data_field():
+    prose = "This field contains plain text for the provider. " * 2_000
+    messages = [{"role": "user", "content": [{"type": "file", "file": {"data": prose}}]}]
+
+    tokens = count_tokens(messages)
+
+    if tokens is None:
+        return
+    assert tokens > 2_000
+
+
 def _big(label: str) -> str:
     # ~2k tokens of filler per message — big enough that a handful of turns
     # reliably crosses a small test budget without depending on exact tiktoken counts.

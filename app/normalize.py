@@ -11,19 +11,25 @@ which provider/tokenizer actually serves the request. If the encoding can't be
 loaded (e.g. no network on first use), counting is skipped — this must never
 break routing.
 
-Multimodal content parts (`image_url`, `input_audio`) never reach the
-tokenizer as their raw payload — an embedded base64 image/audio blob is not
-English-like text, so tiktoken's BPE tokenizes it far denser than real
-prose; a single few-hundred-KB screenshot counted this way turned into
-hundreds of thousands of "tokens" (measured live: vision-demand route_events
-averaging 94k-350k prompt_tokens_compacted for what was an ordinary chat
-message plus one image, and 413-rejecting requests that were nowhere near
-actually too large). `_strip_multimodal_content` replaces each such part
-with a short placeholder before it's ever JSON-dumped for encoding, and
-`count_tokens` adds a flat per-item estimate back on top instead —
-approximating real provider vision/audio token cost (resolution/duration-
-based, not proportional to encoded size) far better than either tokenizing
-the raw bytes or ignoring them outright.
+Multimodal content parts never reach the tokenizer as their raw payload —
+an embedded base64 image/audio/video blob is not English-like text, so
+tiktoken's BPE tokenizes it far denser than real prose; a single
+few-hundred-KB screenshot counted this way turned into hundreds of
+thousands of "tokens" (measured live: vision-demand route_events averaging
+94k-350k prompt_tokens_compacted for what was an ordinary chat message plus
+one image, and 413-rejecting requests that were nowhere near actually too
+large). `_strip_multimodal_content` replaces the known OpenAI-compatible
+part types (`image_url`, `input_audio`) with a short placeholder before
+they're ever JSON-dumped for encoding, and `count_tokens` adds a flat
+per-item estimate back on top instead — approximating real provider
+vision/audio token cost (resolution/duration-based, not proportional to
+encoded size) far better than either tokenizing the raw bytes or ignoring
+them outright. Any *other* part type — a modality ForgeRouter hasn't
+explicitly wired up yet (video, an arbitrary file, whatever a client sends
+next) — still falls through `_strip_inline_media`'s generic safety net:
+this is deliberately not a type whitelist, because the next unhandled
+modality would otherwise reintroduce the exact same bug through a part
+`type` this module has simply never heard of.
 """
 
 from __future__ import annotations
@@ -38,9 +44,22 @@ _BLANK_LINES = re.compile(r"\n{3,}")
 # Flat per-item estimates standing in for real provider vision/audio token
 # cost — deliberately conservative order-of-magnitude figures (see module
 # docstring), not a measured per-provider number. Never proportional to the
-# item's actual encoded size.
+# item's actual encoded size. _MEDIA_TOKEN_ESTIMATE is the generic fallback
+# for a part type _strip_multimodal_content doesn't specifically recognize
+# (see _strip_inline_media) — sized like an image since visual media is the
+# common case for an unanticipated type (video, a file preview, ...).
 _IMAGE_TOKEN_ESTIMATE = 1500
 _AUDIO_TOKEN_ESTIMATE = 300
+_MEDIA_TOKEN_ESTIMATE = 1500
+
+# A long string is either a data: URI (any media type) or sits under one of
+# these common inline-blob field names — real prose in a chat message is
+# very unlikely to hit either, but an embedded video/file/anything-else
+# payload routinely does.
+_DATA_URI_RE = re.compile(r"^data:[^;,]+;base64,", re.IGNORECASE)
+_BASE64_RE = re.compile(r"^[A-Za-z0-9+/_-]+={0,2}$")
+_INLINE_PAYLOAD_KEYS = ("data", "file_data", "inline_data", "bytes")
+_LARGE_STRING_THRESHOLD = 400
 
 _encoding: Any = None
 _encoding_failed = False
@@ -58,13 +77,54 @@ def _get_encoding() -> Any:
     return _encoding
 
 
+def _is_inline_media_payload(key: str, value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    if _DATA_URI_RE.match(value):
+        return True
+    return (len(value) >= _LARGE_STRING_THRESHOLD and key in _INLINE_PAYLOAD_KEYS
+            and bool(_BASE64_RE.fullmatch(value)))
+
+
+def _strip_inline_media(value: Any) -> tuple[Any, int]:
+    """Recursively replace any inline media payload — a data: URI under any
+    field name, or a long string under a common blob-field name — with a
+    short placeholder. This is the safety net for a content part whose
+    `type` isn't one _strip_multimodal_content specifically recognizes (see
+    module docstring): it doesn't need to know what "video" or "file" looks
+    like, only that a long base64-shaped string anywhere inside must never
+    reach the tokenizer as text."""
+    if isinstance(value, dict):
+        extra_tokens = 0
+        result: dict[str, Any] = {}
+        for key, val in value.items():
+            if _is_inline_media_payload(key, val):
+                result[key] = "<omitted>"
+                extra_tokens += _MEDIA_TOKEN_ESTIMATE
+            else:
+                stripped_val, sub_extra = _strip_inline_media(val)
+                result[key] = stripped_val
+                extra_tokens += sub_extra
+        return result, extra_tokens
+    if isinstance(value, list):
+        extra_tokens = 0
+        result = []
+        for item in value:
+            stripped_item, sub_extra = _strip_inline_media(item)
+            result.append(stripped_item)
+            extra_tokens += sub_extra
+        return result, extra_tokens
+    return value, 0
+
+
 def _strip_multimodal_content(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     """(stripped_messages, extra_token_estimate) — replaces every
     image_url/input_audio content part's payload with a short placeholder
     (see module docstring for why the real payload must never be
-    tokenized), returning a flat estimate to add back per item. Messages
-    with plain string content (no multimodal parts) pass through
-    unchanged."""
+    tokenized), returning a flat estimate to add back per item. Any other
+    part type falls through _strip_inline_media's generic safety net
+    instead of passing through untouched. Messages with plain string
+    content (no parts to inspect) pass through unchanged."""
     extra_tokens = 0
     stripped: list[dict[str, Any]] = []
     for message in messages:
@@ -82,7 +142,9 @@ def _strip_multimodal_content(messages: list[dict[str, Any]]) -> tuple[list[dict
                 new_content.append({"type": "input_audio", "input_audio": {"data": "<audio omitted>"}})
                 extra_tokens += _AUDIO_TOKEN_ESTIMATE
             else:
-                new_content.append(part)
+                safe_part, sub_extra = _strip_inline_media(part)
+                new_content.append(safe_part)
+                extra_tokens += sub_extra
         stripped.append({**message, "content": new_content})
     return stripped, extra_tokens
 

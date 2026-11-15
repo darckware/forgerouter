@@ -356,3 +356,67 @@ def test_chat_completion_stream_marks_unhealthy_on_in_band_error_chunk(monkeypat
     assert args[4] == "stream_invalid_request"
 
     assert unhealthy_calls == [("p1/model-a", None, "runtime_stream_invalid_request")]
+
+
+# 2026-11-15: the code downgrade and the reserve minimum count only candidates that can serve
+# the prompt. On that day the only healthy code models were uncatalogued (never viable on a
+# virtual route), neither rule fired, and 42 requests got 413 context_too_large.
+
+
+def _windows(monkeypatch, known: dict[str, int]):
+    window = lambda public_id, provider_model=None: known.get(public_id)  # noqa: E731
+    monkeypatch.setattr("app.context_policy.context_window", window)
+    # A real prompt size: with no tokenizer (offline test image) nothing would be filtered.
+    monkeypatch.setattr("app.main.count_tokens", lambda *_a, **_k: 1_000)
+
+
+def test_code_group_downgrades_when_no_code_model_can_serve_the_prompt(monkeypatch):
+    uncatalogued = ProviderModel("p1/code-unknown", "p1", "code-unknown", 1, ["text", "code", "tool_call"], True, True, "http://a/v1", "")
+    general = ProviderModel("p2/general", "p2", "general", 2, ["text", "tool_call"], True, True, "http://b/v1", "")
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([uncatalogued, general]))
+    monkeypatch.setattr("app.main.get_demand_routes", lambda: {})
+    _windows(monkeypatch, {"p2/general": 200_000})
+    persisted = {}
+    monkeypatch.setattr("app.main.persist_route_event", lambda request_id, model_id, capability, *a, **k: persisted.update(capability=capability, **k))
+    calls = []
+    monkeypatch.setattr("app.main.chat_completion", lambda model, payload: (calls.append(model.id), (200, {"choices": [{"message": {"content": "OK"}}]}))[1])
+
+    response = client.post("/v1/chat/completions", json={"model": "forgerouter/code", "messages": [{"role": "user", "content": "hi"}]})
+
+    assert response.status_code == 200
+    assert calls == ["p2/general"]
+    assert persisted["demand"] == "code" and persisted["capability"] == "text"
+
+
+def test_reserves_fire_when_the_healthy_pool_cannot_serve_the_prompt(monkeypatch):
+    # Three healthy candidates, all uncatalogued: above the reserve minimum by count, none
+    # viable on a virtual route. The runtime-degraded model with a known window must re-enter.
+    unknown = [ProviderModel(f"p1/u{i}", "p1", f"u{i}", 1, ["text"], True, True, "http://a/v1", "") for i in range(3)]
+    degraded = ProviderModel("p2/known", "p2", "known", 2, ["text"], True, False, "http://b/v1", "")
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([*unknown, degraded]))
+    monkeypatch.setattr("app.main.runtime_degraded_models", lambda: {"p2/known"})
+    monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
+    _windows(monkeypatch, {"p2/known": 200_000})
+    calls = []
+    monkeypatch.setattr("app.main.chat_completion", lambda model, payload: (calls.append(model.id), (200, {"choices": [{"message": {"content": "OK"}}]}))[1])
+
+    response = client.post("/v1/chat/completions", json={"model": "auto", "messages": [{"role": "user", "content": "hi"}]})
+
+    assert response.status_code == 200
+    assert calls == ["p2/known"]
+
+
+def test_code_group_never_uses_a_code_only_model(monkeypatch):
+    code_only = ProviderModel("p1/codestral", "p1", "codestral", 1, ["code"], True, True, "http://a/v1", "")
+    general = ProviderModel("p2/gpt", "p2", "gpt", 2, ["text", "code", "tool_call"], True, True, "http://b/v1", "")
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([code_only, general]))
+    monkeypatch.setattr("app.main.get_demand_routes", lambda: {})
+    _windows(monkeypatch, {"p1/codestral": 256_000, "p2/gpt": 1_000_000})
+    monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
+    calls = []
+    monkeypatch.setattr("app.main.chat_completion", lambda model, payload: (calls.append(model.id), (200, {"choices": [{"message": {"content": "OK"}}]}))[1])
+
+    response = client.post("/v1/chat/completions", json={"model": "forgerouter/code", "messages": [{"role": "user", "content": "hi"}]})
+
+    assert response.status_code == 200
+    assert calls == ["p2/gpt"]

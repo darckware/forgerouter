@@ -82,8 +82,8 @@ A resposta traz os headers `x-proxyrouter-request-id` e `x-proxyrouter-model`
 **Como o `auto` classifica**, nesta ordem:
 
 1. Tem imagem → `vision`
-2. A última mensagem do usuário tem sinal de código (bloco ```` ``` ````,
-   nome de arquivo `.py`/`.ts`/…, ou "refatore"/"implemente"/"fix the bug") → `code`
+2. `auto` **nunca** escolhe `code` (2026-11-15): a classe só é usada quando pedida
+   como `forgerouter/code`, e atende só modelos gerais com `code` + `tool_call`.
 3. Dica de raciocínio por palavra inteira ("passo a passo", "prove",
    "chain of thought") → `reasoning`
 4. Senão, por tamanho: simple (< ~1,5k chars) · standard (< ~8k) · complex —

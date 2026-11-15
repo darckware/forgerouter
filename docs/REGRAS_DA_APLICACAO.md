@@ -154,8 +154,9 @@ Requisição → POST /v1/chat/completions
 │                      banco fora do ar → passa sem atribuição
 ├─ 2. PERMISSÕES ───── só os modelos associados ("on") ao agente
 ├─ 3. CAPACIDADE ───── tools → tool_call · imagem → vision · senão text;
-│                      classe code → só modelos com capability code, com
-│                      rebaixamento para tool_call/text quando não há nenhum (seção 7)
+│                      classe code (só forgerouter/code) → modelos com code +
+│                      tool_call, com rebaixamento para tool_call/text quando
+│                      nenhum consegue atender o pedido (seção 7)
 ├─ 4. SAÚDE ────────── só modelos healthy (falha de runtime volta após 10 min,
 │                      ou após o Retry-After enviado pelo provider num 429)
 ├─ 5. ORDENAÇÃO ─────  a) sticky: o último modelo com sucesso para o par
@@ -196,26 +197,38 @@ Requisição → POST /v1/chat/completions
 
 - Modelos virtuais expostos em `/v1/models`: `forgerouter/auto|simple|standard|
   complex|reasoning|vision|audio|code`.
-- `auto` classifica cada pedido, nesta ordem: imagem → vision; sinal de código
-  na última mensagem do usuário (bloco ```` ``` ````, nome de arquivo, verbos
-  como "refatore"/"implemente"/"fix the bug") → code; dica de raciocínio por
+- `auto` classifica cada pedido, nesta ordem: imagem → vision; áudio → audio;
+  dica de raciocínio por
   **palavra inteira** ("passo a passo", "prove" — "aprove"/"provedor" não
   disparam) → reasoning; senão tamanho do prompt e presença de tools decidem
   entre simple (< ~1,5k chars), standard (< ~8k) e complex — o histórico da
   conversa conta com peso 1/4, para follow-ups curtos em conversas longas não
   escalarem de classe.
+- **`auto` nunca escolhe a classe code** (Marcelo, 2026-11-15). Quem usa o
+  ForgeRouter são os agentes do Hermes e os serviços, que conversam e usam
+  ferramentas e nunca editam código (código é com Claude Code, Codex e agy, que
+  usam login próprio e não passam pelo ForgeRouter). A detecção de código por
+  palavras mandava esses pedidos para o grupo de código: memória injetada,
+  caminhos de arquivo, "não implemente" nas rotinas (incidentes de 2026-07-23 e
+  2026-10-12) e, em 2026-11-15, 639 pedidos numa semana, 13,8% com falha. A classe
+  code só existe quando pedida explicitamente: `forgerouter/code`.
+- **O grupo `forgerouter/code` é de modelos gerais** com as capabilities `code` **e**
+  `tool_call`. Modelo só de código (sem `tool_call`) nunca o atende.
+- **Modelos só de código ficam desligados** (desligamento manual, seção 5):
+  codestral e north-mini-code. Não servem a agentes, que precisam de texto e
+  ferramentas para se comunicar; a configuração fica guardada e religa à mão.
 - A classe resolvida é gravada em cada evento (`route_events.demand`) para
   auditoria; pedidos de modelo concreto ficam com demand nula.
 - **Cadeias automáticas por banda de rank**: simple = rank < 30 · standard =
-  30–49 · complex = ≥ 50 · reasoning/vision/audio/code = somente modelos com a
-  capability no catálogo (particularidade de catálogo: sem a capability, o
+  30–49 · complex = ≥ 50 · reasoning/vision/audio = somente modelos com a
+  capability no catálogo; code = modelos com `code` e `tool_call` (particularidade de catálogo: sem a capability, o
   modelo não entra na cadeia da classe). A banda usa o rank estático; a ordem
   dentro da cadeia usa o score dinâmico (seção 6).
 - **Rebaixamento da classe code** (desde 2026-07-23, confirmado pelo Marcelo em
   2026-11-15): `code` é **preferência de qualidade**, não exigência — um modelo
-  sem a capability ainda escreve código, só pior. Quando nenhum modelo com
-  capability `code` está saudável (ou permitido para o agente), o pedido **não
-  falha**: cai para o pool geral (`tool_call` se houver tools, senão `text`),
+  sem a capability ainda escreve código, só pior. Quando nenhum modelo do grupo
+  consegue atender o pedido (saudável, permitido para o agente e com janela que
+  comporta o prompt — seção 10), o pedido **não falha**: cai para o pool geral (`tool_call` se houver tools, senão `text`),
   ordenado pelo score dinâmico. O evento grava `demand = code` com
   `required_capability ≠ code`, o sinal contável de "sem opção de código". Já
   `vision` e `audio` são **exigência**: sem modelo com a capability, não há
@@ -303,15 +316,14 @@ Requisição → POST /v1/chat/completions
 - Cada pedido grava em `route_events` `context_window`, `context_budget`,
   `context_action` (none/truncated/summarized/rejected) e
   `context_candidates_skipped`.
-- **Ordem com as reservas e o rebaixamento (lacuna conhecida, 2026-11-15)**: hoje
-  o rebaixamento da classe code (seção 7) e as reservas (seção 6, camada 6) olham
-  a lista de candidatos **antes** do filtro de contexto. Se os únicos modelos de
-  código saudáveis forem inviáveis para o prompt (ex.: sem janela catalogada numa
-  rota virtual), nem o rebaixamento nem as reservas disparam e o pedido recebe
-  413. Em 2026-11-15, das 00:26 às 00:33 UTC, isso recusou 42 pedidos
-  (Hindsight, Hephaestus, Athos) enquanto os modelos de código com janela
-  conhecida estavam em 429. O comportamento pretendido é que as duas regras
-  contem só candidatos viáveis para o pedido; a correção está pendente.
+- **Rebaixamento e reservas contam só candidatos que servem o pedido**
+  (2026-11-15). O rebaixamento da classe code (seção 7) dispara quando nenhum
+  modelo de código consegue atender o prompt, e as reservas (seção 6, camada 6)
+  quando menos de `AUTO_INCLUDE_MIN_HEALTHY` conseguem — pelo mesmo critério
+  deste filtro (`app/context_policy.py: serviceable_candidates`). Antes, as duas
+  regras olhavam a lista crua: em 2026-11-15, das 00:26 às 00:33 UTC, os únicos
+  modelos de código saudáveis eram sem janela catalogada, nenhuma das duas
+  disparou e 42 pedidos (Hindsight, Hephaestus, Athos) receberam 413.
 
 ## 11. Dashboard — comportamentos
 

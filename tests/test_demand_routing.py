@@ -41,23 +41,19 @@ def test_reasoning_hints_match_whole_words_only():
     assert classify_request([msg("prove que a raiz de 2 é irracional")], has_tools=False) == "reasoning"
 
 
-def test_classify_request_detects_code():
-    assert classify_request([msg("refatore a função de login")], has_tools=False) == "code"
-    assert classify_request([msg("corrija o bug no arquivo app/main.py")], has_tools=False) == "code"
-    assert classify_request([msg("o que acha deste trecho?\n```python\nprint('hi')\n```")], has_tools=False) == "code"
-    # Code signals win over tools and reasoning hints — coding agents send both.
-    assert classify_request([msg("implemente passo a passo o parser.ts")], has_tools=True) == "code"
-    assert classify_request([msg("me explique o que é uma API")], has_tools=False) == "simple"
-
-
-def test_negated_code_hint_is_not_a_code_request():
-    # ForgeHub's routine policy forbids implementing out of scope; that sentence must not make
-    # every routine a code request (it sent Athos's retrospective to a code-only model).
+def test_auto_never_classifies_code():
+    # Marcelo, 2026-11-15: auto's callers are Hermes agents and services, which talk and call
+    # tools and never edit code; forgerouter/code is explicit only. Code-looking text falls
+    # through to the size/tools/reasoning bands like any other request.
+    assert classify_request([msg("refatore a função de login")], has_tools=False) == "simple"
+    assert classify_request([msg("corrija o bug no arquivo app/main.py")], has_tools=False) == "simple"
+    assert classify_request([msg("o que acha deste trecho?\n```python\nprint('hi')\n```")], has_tools=False) == "simple"
+    assert classify_request([msg("implemente passo a passo o parser.ts")], has_tools=True) == "reasoning"
+    assert classify_request([msg("não mexa no banco; implemente o endpoint novo")], has_tools=True) == "standard"
     routine = "Leia as métricas do dia e proponha melhorias.\n- Não implemente fora do seu escopo sem aprovação."
     assert classify_request([msg(routine)], has_tools=True) == "standard"
-    assert classify_request([msg("do not implement anything, just review the plan")], has_tools=False) != "code"
-    # A real request still is code, also when a negation appears elsewhere in the text.
-    assert classify_request([msg("não mexa no banco; implemente o endpoint novo")], has_tools=True) == "code"
+    # The explicit group still resolves to code.
+    assert resolve_demand("forgerouter/code", [msg("oi")], has_tools=True) == "code"
 
 
 def test_classify_request_strips_context_compression_and_task_lists():
@@ -162,11 +158,14 @@ def test_default_chain_audio_only_uses_audio_capable():
     assert chain == [omni]
 
 
-def test_default_chain_code_only_uses_code_capable():
-    plain = model("groq/llama-3.3-70b-versatile", 1)
+def test_default_chain_code_uses_general_models_with_code_and_tool_call():
+    # 2026-11-15: the code group is general models with code + tool_call; a code-only model
+    # (no tool_call) never serves it, and a model without code capability stays out too.
+    plain = model("groq/llama-3.3-70b-versatile", 1, ["text", "tool_call"])
     coder = model("openrouter/qwen-2.5-coder:free", 2, ["text", "code"])
-    chain = default_chain([plain, coder], "code")
-    assert chain == [coder]
+    general = model("openai-codex/gpt-5.6-luna", 1, ["text", "code", "tool_call", "vision"])
+    chain = default_chain([plain, coder, general], "code")
+    assert chain == [general]
 
 
 def test_resolve_demand_virtual_models():

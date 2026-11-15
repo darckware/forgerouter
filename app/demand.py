@@ -17,7 +17,7 @@ DEMAND_INFO: dict[str, str] = {
     "reasoning": "Deep analysis and step-by-step thinking.",
     "vision": "Requests with images — routed only through vision-capable models (catalog).",
     "audio": "Audio work (TTS tag insertion, transcription post-processing) — routed only through audio-capable models (catalog).",
-    "code": "Code generation and editing — routed only through code-capable models (catalog).",
+    "code": "Code generation and editing — only when requested explicitly as forgerouter/code (auto never picks it); general models with code + tool_call (catalog), falling back to the general pool when none can serve.",
 }
 
 VIRTUAL_PREFIX = "forgerouter/"
@@ -39,25 +39,6 @@ REASONING_HINTS = (
 # Hints match whole words only: "prove" must not fire inside "aprove"/"provedor".
 _REASONING_HINTS_RE = re.compile(r"\b(?:" + "|".join(re.escape(hint) for hint in REASONING_HINTS) + r")\b")
 
-CODE_HINTS = (
-    "refactor",
-    "refatore",
-    "refatorar",
-    "implemente",
-    "implementar",
-    "escreva uma função",
-    "write a function",
-    "corrija o bug",
-    "fix the bug",
-    "stack trace",
-    "traceback",
-    "code review",
-    "pull request",
-    "teste unitário",
-    "unit test",
-)
-_CODE_HINTS_RE = re.compile(r"\b(?:" + "|".join(re.escape(hint) for hint in CODE_HINTS) + r")\b")
-_FILE_EXT_RE = re.compile(r"\b[\w./-]+\.(?:py|ts|tsx|js|jsx|java|go|rs|c|cpp|h|cs|rb|php|sql|sh|css|html|json|ya?ml|toml)\b")
 
 # Prompt-size thresholds (chars, ~4 chars per token): keep small jobs on small models
 # so the free-tier quotas of the big models survive the day.
@@ -156,42 +137,6 @@ def messages_have_audio(messages: list[Any]) -> bool:
     return False
 
 
-# How far into the last user message the code-hint/file-extension scan looks.
-# Clients that inject extra context (not just the known <memory-context> block —
-# e.g. a Hermes plugin's pre_llm_call "user_message" target, appended raw with no
-# wrapper tag at all) always append it *after* the human's own text
-# (turn_context.py: compose_user_api_content does `content + "\n\n" + injections`).
-# A software-engineering ecosystem's injected boilerplate is near-guaranteed to
-# contain a file extension or code-ish word somewhere in a multi-KB dump, which
-# made an unrelated one-word reply ("teste") classify as "code" — same failure
-# class as the <memory-context> incident, just via an injection with no tag to
-# strip. Bounding the scan to what a human plausibly typed avoids needing to know
-# every injection format a client might use.
-CODE_HINT_SCAN_CHARS = 2_000
-
-
-# A hint right after a negation is a prohibition, not a request: ForgeHub's routine policy
-# ("Não implemente fora do seu escopo sem aprovação") rides on every routine prompt and sent
-# Athos/Aegis/Kairos/Hephaestus routines to a code-only model (2026-10-12: 619 calls in a week;
-# Athos's daily retrospective answered with an invented MCP-validation task).
-_NEGATION_RE = re.compile(r"\b(?:não|nao|nunca|jamais|sem|never|don't|dont|do not|not)\s+$")
-
-
-def _has_code_hint(lowered: str) -> bool:
-    return any(
-        not _NEGATION_RE.search(lowered[max(0, match.start() - 12):match.start()])
-        for match in _CODE_HINTS_RE.finditer(lowered)
-    )
-
-
-def _looks_like_code(text: str, lowered: str) -> bool:
-    text = text[:CODE_HINT_SCAN_CHARS]
-    lowered = lowered[:CODE_HINT_SCAN_CHARS]
-    if "```" in text:
-        return True
-    return bool(_has_code_hint(lowered) or _FILE_EXT_RE.search(lowered))
-
-
 def classify_request(messages: list[Any], has_tools: bool) -> str:
     """Classify a chat request into a demand class (forgerouter/auto behaviour)."""
     if messages_have_images(messages):
@@ -209,8 +154,11 @@ def classify_request(messages: list[Any], has_tools: bool) -> str:
             last_user = text
     lowered = last_user.lower()
     effective_chars = len(last_user) + (total_chars - len(last_user)) // HISTORY_DISCOUNT
-    if _looks_like_code(last_user, lowered):
-        return "code"
+    # No "code" class from auto (Marcelo, 2026-11-15): ForgeRouter's callers are Hermes agents and
+    # services, which talk and call tools and never edit code (coding is Claude Code/Codex/agy, on
+    # their own logins). Keyword detection kept sending them to the code group -- memory dumps,
+    # file paths and "não implemente" in routine prompts (incidents 2026-07-23, 2026-10-12) and,
+    # on 2026-11-15, 639 requests in a week, 13.8% failed. forgerouter/code is explicit only.
     if _REASONING_HINTS_RE.search(lowered):
         return "reasoning"
     if has_tools:
@@ -240,8 +188,11 @@ def default_chain(
     downstream of this ordering, not duplicated here.
     """
     by_score_desc = sorted(models, key=lambda model: -dynamic_score(model.id, performance))
-    if demand in ("vision", "audio", "code"):
-        # Vision/audio/code are catalog particularities: only models with the capability may serve them.
+    if demand == "code":
+        # The code group: general models with code + tool_call (2026-11-15) — never code-only ones.
+        return [model for model in by_score_desc if "code" in model.capabilities and "tool_call" in model.capabilities]
+    if demand in ("vision", "audio"):
+        # Vision/audio are catalog particularities: only models with the capability may serve them.
         return [model for model in by_score_desc if demand in model.capabilities]
     if demand == "reasoning":
         band = [model for model in by_score_desc if "reasoning" in model.capabilities]

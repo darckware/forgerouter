@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, Field
 
-from app.context_policy import partition_candidates
+from app.context_policy import partition_candidates, serviceable_candidates
 from app.demand import DEMAND_INFO, DEMANDS, VIRTUAL_MODELS, _message_text, default_chain, messages_have_audio, messages_have_images, resolve_demand
 from app.mcp_server import mcp_server
 from app.normalize import count_tokens, normalize_messages, truncate_messages
@@ -361,6 +361,19 @@ def infer_capability(request: ChatCompletionRequest, demand: str | None = None) 
     if request.tools:
         return "tool_call"
     return "text"
+
+
+def _serves_capability(model: Any, capability: str) -> bool:
+    """The code group is general models with code + tool_call (Marcelo, 2026-11-15): agents
+    need text and tools, so a code-only model never serves it; any other capability is
+    the plain catalog check."""
+    if capability == "code":
+        return "code" in model.capabilities and "tool_call" in model.capabilities
+    return capability in model.capabilities
+
+
+def _capability_pool(registry: Any, capability: str) -> list[Any]:
+    return [model for model in registry.healthy_for_capability(capability) if _serves_capability(model, capability)]
 
 
 class ModelHealthPayload(BaseModel):
@@ -1298,7 +1311,7 @@ def chat_completions(request: ChatCompletionRequest, raw_request: Request):
     demand = resolve_demand(request.model, request.messages, bool(request.tools))
     prompt_preview = _prompt_preview(request.messages)
     capability = infer_capability(request, demand)
-    candidates = registry.healthy_for_capability(capability)
+    candidates = _capability_pool(registry, capability)
     allowed: set[str] | None = None
     if agent_name:
         # Per-agent model controls: the agent routes only to its associated models.
@@ -1310,17 +1323,45 @@ def chat_completions(request: ChatCompletionRequest, raw_request: Request):
             allowed = None
         if allowed is not None:
             candidates = [model for model in candidates if model.id in allowed]
+    # exclude_none: strict providers (Mistral, Cloudflare) reject explicit nulls
+    # ("name": null → 422 extra_forbidden); lenient ones ignore them either way.
+    # Computed before the downgrade/reserve decisions (not just payload building) so they —
+    # and the context-window-aware prioritization below — can use the real prompt size.
+    raw_messages = [message.model_dump(exclude_none=True) for message in request.messages]
+    try:
+        tokens_raw = count_tokens(raw_messages, request.tools)
+    except Exception:
+        tokens_raw = None
+    try:
+        truncation_on = context_truncation_enabled()
+    except Exception:
+        truncation_on = False
+    try:
+        trigger_percent = context_truncation_trigger_percent()
+    except Exception:
+        trigger_percent = 80
+    try:
+        unknown_budget = context_truncation_max_tokens()
+    except Exception:
+        unknown_budget = 32_000
+
+    def serviceable(pool: list[Any]) -> list[Any]:
+        # The downgrade and reserve rules count only candidates that could serve this prompt
+        # (2026-11-15) — see app.context_policy.serviceable_candidates.
+        return serviceable_candidates(pool, tokens_raw, trigger_percent, unknown_budget, demand is not None, truncation_on)
+
     capability_downgraded = False
-    if demand == "code" and not candidates:
+    if demand == "code" and not serviceable(candidates):
         # Code-capable is a quality preference, not a hard requirement like vision
         # (a non-code model can still write code, just not as well) — so instead of
-        # hard-failing when zero code-capable models are healthy (or allowed for this agent),
+        # hard-failing when no code model can serve this request (none healthy, none
+        # allowed for this agent, or none whose context window holds the prompt),
         # fall back to the general pool. required_capability on the persisted route event records
         # the downgrade: demand="code" with required_capability != "code" is the
         # countable "no code option available" signal, distinct from ordinary
         # misclassification (where required_capability would still read "code").
         capability = "tool_call" if request.tools else "text"
-        candidates = registry.healthy_for_capability(capability)
+        candidates = _capability_pool(registry, capability)
         if allowed is not None:
             candidates = [model for model in candidates if model.id in allowed]
         capability_downgraded = True
@@ -1328,9 +1369,10 @@ def chat_completions(request: ChatCompletionRequest, raw_request: Request):
     # healthy pool shrinks; below the minimum, models degraded *only by runtime
     # failures* re-enter as last-resort reserves instead of waiting out the
     # 10-minute cooldown — trying a possibly rate-limited model beats failing.
+    # The minimum counts only candidates that can serve this prompt (2026-11-15).
     reserves: list[Any] = []
     min_pool = int(os.environ.get("AUTO_INCLUDE_MIN_HEALTHY", "3"))
-    if len(candidates) < min_pool:
+    if len(serviceable(candidates)) < min_pool:
         try:
             degraded_ids = runtime_degraded_models()
         except Exception:
@@ -1347,20 +1389,11 @@ def chat_completions(request: ChatCompletionRequest, raw_request: Request):
                     and not model.healthy
                     and model.id in degraded_ids
                     and model.id not in candidate_ids
-                    and capability in model.capabilities
+                    and _serves_capability(model, capability)
                     and (allowed is None or model.id in allowed)
                 ),
                 key=lambda model: (model.tier, -intelligence_score(model.id)),
             )
-    # exclude_none: strict providers (Mistral, Cloudflare) reject explicit nulls
-    # ("name": null → 422 extra_forbidden); lenient ones ignore them either way.
-    # Computed here (ahead of demand-chain ordering, not just payload building)
-    # so context-window-aware prioritization below can use the real prompt size.
-    raw_messages = [message.model_dump(exclude_none=True) for message in request.messages]
-    try:
-        tokens_raw = count_tokens(raw_messages, request.tools)
-    except Exception:
-        tokens_raw = None
     if demand:
         # Demand-based routing (auto / forgerouter/<demand>): try the configured chain for
         # the demand class first (or the rank-derived default), then every other healthy
@@ -1441,18 +1474,6 @@ def chat_completions(request: ChatCompletionRequest, raw_request: Request):
             messages_for_payload = raw_messages
     else:
         messages_for_payload = raw_messages
-    try:
-        truncation_on = context_truncation_enabled()
-    except Exception:
-        truncation_on = False
-    try:
-        trigger_percent = context_truncation_trigger_percent()
-    except Exception:
-        trigger_percent = 80
-    try:
-        unknown_budget = context_truncation_max_tokens()
-    except Exception:
-        unknown_budget = 32_000
     # Never knowingly call a candidate whose real usable window is smaller
     # than the prompt: partition down to only the candidates that fit,
     # truncating toward the largest viable budget first if none do, and

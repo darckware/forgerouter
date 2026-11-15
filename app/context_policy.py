@@ -71,3 +71,38 @@ def partition_candidates(
         else:
             excluded.append(candidate)
     return ContextPartition(known_fit + unknown_fit, excluded, max(budgets, default=None))
+
+
+def serviceable_candidates(
+    candidates: list[ProviderModel],
+    prompt_tokens: int | None,
+    trigger_percent: int,
+    unknown_budget: int,
+    virtual_route: bool,
+    truncation_on: bool,
+) -> list[ProviderModel]:
+    """The candidates that could actually serve this prompt, by the same criteria as
+    partition_candidates(): they fit as-is, or — with truncation on — they have a usable
+    budget to truncate toward (a virtual route's uncatalogued or sub-floor model never does).
+
+    The code-class downgrade and the runtime-reserve rule decide on *this* list, not on the
+    raw healthy pool (2026-11-15): when the only healthy code models were uncatalogued, the
+    pool looked non-empty and above the reserve minimum, neither rule fired, and the context
+    filter then emptied it — 42 requests got 413 while general and runtime-degraded code
+    models with known windows were available."""
+    if prompt_tokens is None:
+        return list(candidates)
+    partition = partition_candidates(candidates, prompt_tokens, trigger_percent, unknown_budget, virtual_route)
+    if not truncation_on:
+        return partition.fitting
+    fitting = {model.id for model in partition.fitting}
+    result: list[ProviderModel] = []
+    for candidate in candidates:
+        if candidate.id in fitting:
+            result.append(candidate)
+            continue
+        window = context_window(candidate.id, candidate.provider_model)
+        if virtual_route and (window is None or window < MINIMUM_VIRTUAL_CONTEXT):
+            continue
+        result.append(candidate)
+    return result

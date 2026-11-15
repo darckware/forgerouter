@@ -1,7 +1,7 @@
 # ForgeRouter — Regras da Aplicação
 
 > Documento de referência das regras de negócio e comportamento do ForgeRouter
-> (Hermes AI Proxy Router). Atualizado em 2026-06-11. Complementa o PRD
+> (Hermes AI Proxy Router). Atualizado em 2026-11-15. Complementa o PRD
 > (`HERMES_AI_PROXY_ROUTER_PRD_v2.md`) e o `CLAUDE.md` com as regras vigentes no código.
 
 ---
@@ -153,7 +153,9 @@ Requisição → POST /v1/chat/completions
 ├─ 1. AUTENTICAÇÃO ─── key de agente válida? sem key/inválida → 401
 │                      banco fora do ar → passa sem atribuição
 ├─ 2. PERMISSÕES ───── só os modelos associados ("on") ao agente
-├─ 3. CAPACIDADE ───── tools → tool_call · imagem → vision · senão text
+├─ 3. CAPACIDADE ───── tools → tool_call · imagem → vision · senão text;
+│                      classe code → só modelos com capability code, com
+│                      rebaixamento para tool_call/text quando não há nenhum (seção 7)
 ├─ 4. SAÚDE ────────── só modelos healthy (falha de runtime volta após 10 min,
 │                      ou após o Retry-After enviado pelo provider num 429)
 ├─ 5. ORDENAÇÃO ─────  a) sticky: o último modelo com sucesso para o par
@@ -174,7 +176,10 @@ Requisição → POST /v1/chat/completions
 │                      para o fim de tudo por BREAKER_COOLDOWN_SECONDS (120);
 │                      meio-aberto depois (uma sonda). Deprioriza, nunca exclui.
 │                      Estado em memória — zera no restart.
-└─ 8. EXECUÇÃO ─────── tenta em ordem; erro (HTTP ≥ 400/exceção) → grava evento
+├─ 8. CONTEXTO ─────── só candidatos cuja janela útil comporta o prompt; rotas
+│                      virtuais exigem janela catalogada ≥ 64k (seção 10);
+│                      nada cabe → truncamento (se ligado) ou 413 context_too_large
+└─ 9. EXECUÇÃO ─────── tenta em ordem; erro (HTTP ≥ 400/exceção) → grava evento
                        (com a classe `demand` resolvida), marca unhealthy
                        (runtime) e tenta o próximo;
                        todos falharam → 502 all_providers_failed
@@ -204,8 +209,17 @@ Requisição → POST /v1/chat/completions
 - **Cadeias automáticas por banda de rank**: simple = rank < 30 · standard =
   30–49 · complex = ≥ 50 · reasoning/vision/audio/code = somente modelos com a
   capability no catálogo (particularidade de catálogo: sem a capability, o
-  modelo nunca serve a classe). A banda usa o rank estático; a ordem dentro da
-  cadeia usa o score dinâmico (seção 6).
+  modelo não entra na cadeia da classe). A banda usa o rank estático; a ordem
+  dentro da cadeia usa o score dinâmico (seção 6).
+- **Rebaixamento da classe code** (desde 2026-07-23, confirmado pelo Marcelo em
+  2026-11-15): `code` é **preferência de qualidade**, não exigência — um modelo
+  sem a capability ainda escreve código, só pior. Quando nenhum modelo com
+  capability `code` está saudável (ou permitido para o agente), o pedido **não
+  falha**: cai para o pool geral (`tool_call` se houver tools, senão `text`),
+  ordenado pelo score dinâmico. O evento grava `demand = code` com
+  `required_capability ≠ code`, o sinal contável de "sem opção de código". Já
+  `vision` e `audio` são **exigência**: sem modelo com a capability, não há
+  rebaixamento.
 - **Cadeia customizada** por classe é salva em `ai_router.demand_routes` e tem
   precedência sobre a automática.
 - **Economia de tokens** é o objetivo: trabalho curto vai para modelo pequeno,
@@ -262,7 +276,44 @@ Requisição → POST /v1/chat/completions
   requisição segue normalmente — "falha de tokenizer nunca quebra roteamento",
   igual à regra de falha de banco.
 
-## 10. Dashboard — comportamentos
+## 10. Janela de contexto e roteamento seguro
+
+- **Nunca chamar um candidato cuja janela útil não comporta o prompt.** Janela
+  útil = janela real do modelo × `trigger_percent` (padrão 80%), comparada ao
+  prompt normalizado (mesmo estimador da seção 9).
+- **Rotas virtuais** (`auto` e `forgerouter/*`) exigem janela **catalogada** de
+  pelo menos 64k tokens (`MINIMUM_VIRTUAL_CONTEXT`, o piso do Hermes Agent),
+  mesmo que o prompt coubesse. **Janela desconhecida não é passe livre**: o
+  modelo é excluído da rota virtual (desde 2026-09-18). Pedido de **modelo
+  concreto** pode usar modelo abaixo de 64k ou sem catálogo, se o prompt couber.
+- **De onde vem a janela**: fonte documentada (catálogo, preço do provedor,
+  `config/model_pricing_overrides.json` com fonte) ou a **descoberta ativa**
+  (`POST /admin/pricing/discover-context`, `scripts/discover_context_windows.py`),
+  que testa o modelo de verdade e grava só um **limite inferior confirmado** em
+  `config/model_context_discovered.json`. **Nunca deduzir a janela por sinais
+  indiretos** (ex.: "o modelo irmão tem 1M"). A descoberta nunca roda dentro de
+  uma requisição nem no health scan, porque cada modelo custa até 5 chamadas reais;
+  um 429 nunca é lido como "prompt longo demais".
+- **Quando nenhum candidato cabe**: com truncamento ligado, corta os turnos mais
+  antigos (resumidos por um modelo barato quando possível) até caber no maior
+  orçamento disponível; o truncamento é **com perda** e vem **desligado** por
+  padrão (`context_truncation_enabled`). Desligado, ou se só a parte protegida
+  (mensagens de sistema + último turno) já não couber, a resposta é
+  **`413 context_too_large`**, sem chamar nenhum provedor.
+- Cada pedido grava em `route_events` `context_window`, `context_budget`,
+  `context_action` (none/truncated/summarized/rejected) e
+  `context_candidates_skipped`.
+- **Ordem com as reservas e o rebaixamento (lacuna conhecida, 2026-11-15)**: hoje
+  o rebaixamento da classe code (seção 7) e as reservas (seção 6, camada 6) olham
+  a lista de candidatos **antes** do filtro de contexto. Se os únicos modelos de
+  código saudáveis forem inviáveis para o prompt (ex.: sem janela catalogada numa
+  rota virtual), nem o rebaixamento nem as reservas disparam e o pedido recebe
+  413. Em 2026-11-15, das 00:26 às 00:33 UTC, isso recusou 42 pedidos
+  (Hindsight, Hephaestus, Athos) enquanto os modelos de código com janela
+  conhecida estavam em 429. O comportamento pretendido é que as duas regras
+  contem só candidatos viáveis para o pedido; a correção está pendente.
+
+## 11. Dashboard — comportamentos
 
 - **Sincronismo**: atualização automática a cada 5s, com **botão global
   "Sync: on/off"** na sidebar (persistido por navegador) e **pausa automática**
@@ -278,7 +329,7 @@ Requisição → POST /v1/chat/completions
   sempre conversa como um agente específico (a key dele atribui o uso e aplica
   os controles de modelo).
 
-## 11. Banco de dados e migrations
+## 12. Banco de dados e migrations
 
 - Banco **`forgerouter`** (Foundation-managed, container
   `hermes_foundation_pg_postgres`), usuário `proxyrouter_user`, schema
@@ -297,7 +348,7 @@ Requisição → POST /v1/chat/completions
 - Modelos se ligam por `public_id` (ex.: `local/qwen2.5:1.5b`).
 - `.env` guarda apenas `DATABASE_URL` e afins — **nunca commitar**.
 
-## 12. Segurança — resumo das invariantes
+## 13. Segurança — resumo das invariantes
 
 1. Segredos nunca são logados, expostos ou retornados sem mascaramento; revelar
    key completa exige autenticação admin.
@@ -307,3 +358,6 @@ Requisição → POST /v1/chat/completions
 5. Endpoints admin de escrita exigem sessão do dashboard ou key de agente;
    leitura é pública e sem segredos.
 6. Só um agente detém o papel aux-tasks (garantido pelo banco).
+7. Nunca chamar um modelo cuja janela não comporta o prompt; rotas virtuais só
+   usam janela catalogada ≥ 64k; janela nunca é deduzida, só documentada ou
+   descoberta pelo teste ativo.

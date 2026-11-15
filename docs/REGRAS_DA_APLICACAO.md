@@ -217,6 +217,12 @@ Requisição → POST /v1/chat/completions
 - **Modelos só de código ficam desligados** (desligamento manual, seção 5):
   codestral e north-mini-code. Não servem a agentes, que precisam de texto e
   ferramentas para se comunicar; a configuração fica guardada e religa à mão.
+- **Classificadores de segurança ficam desligados** (desligamento manual, seção 5):
+  llama-guard e os nemoguard/nemotron safety/content-safety. Respondem só
+  "seguro/inseguro", nunca o texto pedido. Em 2026-11-15 o
+  `nemotron-safety-guard-8b-v3` tinha atendido 497 pedidos do Hindsight em 14 dias
+  e a análise de Messages do ForgeHub, que falhou por não receber JSON. Nunca
+  servem a agentes nem a serviços; um modelo novo desse tipo entra desligado.
 - A classe resolvida é gravada em cada evento (`route_events.demand`) para
   auditoria; pedidos de modelo concreto ficam com demand nula.
 - **Cadeias automáticas por banda de rank**: simple = rank < 30 · standard =
@@ -373,3 +379,5 @@ Requisição → POST /v1/chat/completions
 7. Nunca chamar um modelo cuja janela não comporta o prompt; rotas virtuais só
    usam janela catalogada ≥ 64k; janela nunca é deduzida, só documentada ou
    descoberta pelo teste ativo.
+8. Nunca rotear para modelo só de código nem para classificador de segurança:
+   agentes e serviços precisam de texto (seção 7).

@@ -212,7 +212,8 @@ def _virtual_model_context_lengths(registry, allowed: set[str] | None = None) ->
     audio safety check still happens per-request via app.context_policy.
     """
     def reachable_pool(capability: str) -> list[Any]:
-        pool = registry.healthy_for_capability(capability)
+        # Same capability gate as real routing (_capability_pool: the code group needs code + tool_call).
+        pool = _capability_pool(registry, capability)
         return [model for model in pool if model.id in allowed] if allowed is not None else pool
 
     healthy = reachable_pool("text")
@@ -234,7 +235,8 @@ def _virtual_model_context_lengths(registry, allowed: set[str] | None = None) ->
             if window and window >= VIRTUAL_MODEL_CONTEXT_LENGTH
         ]
         per_demand[demand] = max(min(windows), VIRTUAL_MODEL_CONTEXT_LENGTH) if windows else VIRTUAL_MODEL_CONTEXT_LENGTH
-    text_demands = [d for d in DEMANDS if d not in ("vision", "audio")]
+    # code is explicit only since 2026-11-15 (auto never resolves to it), so it doesn't bound auto either.
+    text_demands = [d for d in DEMANDS if d not in ("vision", "audio", "code")]
     per_demand["auto"] = min((per_demand[d] for d in text_demands), default=VIRTUAL_MODEL_CONTEXT_LENGTH)
     return per_demand
 
@@ -1351,7 +1353,9 @@ def chat_completions(request: ChatCompletionRequest, raw_request: Request):
         return serviceable_candidates(pool, tokens_raw, trigger_percent, unknown_budget, demand is not None, truncation_on)
 
     capability_downgraded = False
-    if demand == "code" and not serviceable(candidates):
+    # Only the code capability downgrades: a forgerouter/code request carrying an image/audio part
+    # resolves to the vision/audio capability, a hard requirement that must never fall back.
+    if demand == "code" and capability == "code" and not serviceable(candidates):
         # Code-capable is a quality preference, not a hard requirement like vision
         # (a non-code model can still write code, just not as well) — so instead of
         # hard-failing when no code model can serve this request (none healthy, none

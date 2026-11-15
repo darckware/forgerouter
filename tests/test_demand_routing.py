@@ -489,8 +489,8 @@ def test_models_endpoint_virtual_context_length_widens_beyond_the_chain_head_ban
     # every other healthy candidate stays in the pool. The advertised
     # guarantee must reflect that whole reachable pool, not just the head
     # band, or it understates the real (smaller) worst case.
-    big = model("openrouter/deepseek-r1:free", 2, ["text", "reasoning", "code"])  # score 60
-    small = model("local/qwen2.5:1.5b", 4, ["text", "code"])  # score 12
+    big = model("openrouter/deepseek-r1:free", 2, ["text", "reasoning", "code", "tool_call"])  # score 60
+    small = model("local/qwen2.5:1.5b", 4, ["text", "code", "tool_call"])  # score 12
     monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([big, small]))
     _patch_context_window(monkeypatch, {"openrouter/deepseek-r1:free": 300_000, "local/qwen2.5:1.5b": 70_000})
 
@@ -506,21 +506,21 @@ def test_models_endpoint_virtual_context_length_widens_beyond_the_chain_head_ban
     assert virtual["forgerouter/auto"] == 70_000
 
 
-def test_models_endpoint_code_pool_reaches_models_without_text_capability(monkeypatch):
-    # code/vision/audio are hard capability gates real routing checks
-    # directly via registry.healthy_for_capability(demand) (infer_capability
-    # returns the demand itself as the required capability) — a model with
-    # "code" but not "text" is reachable by real routing and must be
-    # reflected here too, not silently dropped by first filtering to the
-    # "text" pool and only then checking for "code" membership within it.
+def test_models_endpoint_code_pool_matches_the_code_group(monkeypatch):
+    # The code group (2026-11-15) is models with code + tool_call, gated like real routing
+    # (_capability_pool): a code-only model never counts, and a code + tool_call model without
+    # "text" still does. auto never resolves to code, so the code pool doesn't bound auto.
     code_only = model("p/code-only", 1, ["code"])
-    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([code_only]))
-    _patch_context_window(monkeypatch, {"p/code-only": 90_000})
+    coder = model("p/coder", 1, ["code", "tool_call"])
+    general = model("p/general", 2, ["text", "tool_call"])
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([code_only, coder, general]))
+    _patch_context_window(monkeypatch, {"p/code-only": 70_000, "p/coder": 90_000, "p/general": 300_000})
 
     payload = client.get("/v1/models").json()["data"]
     virtual = {item["id"]: item["context_length"] for item in payload if item["id"].startswith("forgerouter/")}
 
     assert virtual["forgerouter/code"] == 90_000
+    assert virtual["forgerouter/auto"] == 300_000
 
 
 def test_models_endpoint_ignores_known_sub_floor_window_in_the_guarantee(monkeypatch):
@@ -528,8 +528,8 @@ def test_models_endpoint_ignores_known_sub_floor_window_in_the_guarantee(monkeyp
     # virtual route — app.context_policy.partition_candidates hard-excludes
     # it at request time the same way. It must not drag the advertised
     # guarantee down to a worst case real routing could never produce.
-    roomy = model("p/roomy", 1, ["text", "code"])
-    sub_floor = model("p/sub-floor", 2, ["text", "code"])
+    roomy = model("p/roomy", 1, ["text", "code", "tool_call"])
+    sub_floor = model("p/sub-floor", 2, ["text", "code", "tool_call"])
     monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([roomy, sub_floor]))
     _patch_context_window(monkeypatch, {"p/roomy": 300_000, "p/sub-floor": 32_000})
 

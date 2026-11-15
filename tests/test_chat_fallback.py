@@ -420,3 +420,48 @@ def test_code_group_never_uses_a_code_only_model(monkeypatch):
 
     assert response.status_code == 200
     assert calls == ["p2/gpt"]
+
+
+def test_code_request_with_an_image_never_downgrades_off_vision(monkeypatch):
+    # Images are a hard requirement: forgerouter/code + an image resolves to the vision
+    # capability, and an unserviceable vision pool must not fall back to text models.
+    seeing = ProviderModel("p1/vision-unknown", "p1", "vision-unknown", 1, ["text", "vision"], True, True, "http://a/v1", "")
+    general = ProviderModel("p2/general", "p2", "general", 2, ["text", "tool_call"], True, True, "http://b/v1", "")
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([seeing, general]))
+    monkeypatch.setattr("app.main.get_demand_routes", lambda: {})
+    monkeypatch.setattr("app.main.context_truncation_enabled", lambda: False)
+    _windows(monkeypatch, {"p2/general": 200_000})
+    monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
+    calls = []
+    monkeypatch.setattr("app.main.chat_completion", lambda model, payload: (calls.append(model.id), (200, {"choices": [{"message": {"content": "OK"}}]}))[1])
+    image = {"role": "user", "content": [{"type": "text", "text": "o que é isto?"},
+             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}
+
+    response = client.post("/v1/chat/completions", json={"model": "forgerouter/code", "messages": [image]})
+
+    assert response.status_code == 413
+    assert calls == []
+
+
+def test_code_reserves_never_readmit_a_code_only_model(monkeypatch):
+    general = ProviderModel("p1/gpt", "p1", "gpt", 1, ["text", "code", "tool_call"], True, True, "http://a/v1", "")
+    code_only = ProviderModel("p2/codestral", "p2", "codestral", 2, ["code"], True, False, "http://b/v1", "")
+    degraded_general = ProviderModel("p3/gpt-b", "p3", "gpt-b", 2, ["text", "code", "tool_call"], True, False, "http://c/v1", "")
+    monkeypatch.setattr("app.main.load_registry_with_db_health", lambda: ProviderRegistry([general, code_only, degraded_general]))
+    monkeypatch.setattr("app.main.runtime_degraded_models", lambda: {"p2/codestral", "p3/gpt-b"})
+    monkeypatch.setattr("app.main.get_demand_routes", lambda: {})
+    monkeypatch.setattr("app.main.mark_runtime_failure_unhealthy", lambda *args, **kwargs: None)
+    _windows(monkeypatch, {"p1/gpt": 1_000_000, "p2/codestral": 256_000, "p3/gpt-b": 1_000_000})
+    monkeypatch.setattr("app.main.persist_route_event", lambda *args, **kwargs: None)
+    calls = []
+
+    def fake_chat_completion(model, payload):
+        calls.append(model.id)
+        return (429, {"error": {"message": "rate limited"}}) if model.id == "p1/gpt" else (200, {"choices": [{"message": {"content": "OK"}}]})
+
+    monkeypatch.setattr("app.main.chat_completion", fake_chat_completion)
+
+    response = client.post("/v1/chat/completions", json={"model": "forgerouter/code", "messages": [{"role": "user", "content": "hi"}]})
+
+    assert response.status_code == 200
+    assert calls == ["p1/gpt", "p3/gpt-b"]
